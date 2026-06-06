@@ -229,7 +229,7 @@ export default function Dashboard() {
       const data = await res.json();
       if (data.success) setNewsFeed(data.news);
     } catch (e) {
-      console.error("ดึงข่าวสดขัดข้อง:", e);
+      console.error("ดึงข่าวสดขัดข้องจำเป็น:", e);
     }
   };
 
