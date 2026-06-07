@@ -200,9 +200,9 @@ export default function Dashboard() {
   const scaleMultiplierRef = useRef(1.0);
 
   // สถิติยอดพอร์ตและการเทรด
-  const totalEquity = balances.reduce((sum, b) => sum + b.equity, 0);
-  const activeTradesCount = orders.filter((o) => o.status === "PENDING" || o.status === "OPEN").length;
-  const todayPnLSum = orders.reduce((sum, o) => sum + o.pnl, 0);
+  const totalEquity = (balances || []).reduce((sum, b) => sum + b.equity, 0);
+  const activeTradesCount = (orders || []).filter((o) => o.status === "PENDING" || o.status === "OPEN").length;
+  const todayPnLSum = (orders || []).reduce((sum, o) => sum + o.pnl, 0);
 
   // เลื่อนหน้าต่างแชทลงด้านล่างอัตโนมัติ
   useEffect(() => {
@@ -243,8 +243,8 @@ export default function Dashboard() {
       setSignal(data.signal);
       setRisk(data.risk);
       setMode(data.mode);
-      setBalances(data.balances);
-      setOrders(data.orders);
+      setBalances(data.balances || []);
+      setOrders(data.orders || []);
       
       // ดึงคอนฟิกการตั้งค่า
       if (data.settings) {
@@ -315,8 +315,8 @@ export default function Dashboard() {
           setSignal(s.signal);
           setRisk(s.risk);
           setMode(s.mode);
-          setBalances(s.balances);
-          setOrders(s.orders);
+          setBalances(s.balances || []);
+          setOrders(s.orders || []);
 
           if (s.journal && s.journal.length > 0) {
             const initialChats = s.journal.map((j: any) => {
@@ -362,7 +362,7 @@ export default function Dashboard() {
         } 
         else if (msg.type === "order_opened") {
           setOrders((prev) => [msg.order, ...prev]);
-          setBalances(msg.balances);
+          if (msg.balances) setBalances(msg.balances);
           addChatMessage("ea", `🔔 [ระบบ Team ERP] เปิดออเดอร์ใหม่สถานะรอดำเนินการ: ${msg.order.action} ${msg.order.symbol} ที่ราคา ${msg.order.entry_price}`);
         }
         else if (msg.type === "order_closed") {
@@ -371,7 +371,7 @@ export default function Dashboard() {
           } else if (msg.order) {
             setOrders((prev) => prev.map(o => o.id === msg.order.id ? msg.order : o));
           }
-          setBalances(msg.balances);
+          if (msg.balances) setBalances(msg.balances);
           
           const eaIndex = ROOMS_CONFIG.findIndex((r) => r.id === "ea");
           if (eaIndex >= 0 && agentsStateRef.current[eaIndex]) {
@@ -1168,15 +1168,15 @@ export default function Dashboard() {
       const ceoCenter = centers["ceo"];
       if (!ceoCenter) return;
 
-      const targetRoomIds = ["chart", "audit", "ea"];
+      const targetRoomIds = ["chart", "audit", "ea", "finance", "strategy", "risk"];
       
       targetRoomIds.forEach((ti, idx) => {
         const dest = centers[ti];
         if (!dest) return;
 
-        ctx.strokeStyle = "rgba(6, 182, 212, 0.22)"; // นีออนฟ้าเข้มข้น
-        ctx.lineWidth = 1.2;
-        ctx.setLineDash([5, 5]);
+        ctx.strokeStyle = "rgba(6, 182, 212, 0.4)"; // Bright Neon
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([5, 10]);
         
         ctx.beginPath();
         ctx.moveTo(ceoCenter.cx, ceoCenter.cy);
@@ -1185,15 +1185,20 @@ export default function Dashboard() {
         
         ctx.setLineDash([]); 
 
-        const speedMultiplier = 0.008;
-        const progress = ((frameCountRef.current * speedMultiplier) + idx * 0.33) % 1;
+        // Glowing Event Flow Animation
+        const speedMultiplier = 0.012;
+        const progress = ((frameCountRef.current * speedMultiplier) + idx * 0.15) % 1;
         const px = ceoCenter.cx + (dest.cx - ceoCenter.cx) * progress;
         const py = ceoCenter.cy + (dest.cy - ceoCenter.cy) * progress;
         
+        // Glowing dot
+        ctx.shadowColor = "#22d3ee";
+        ctx.shadowBlur = 10;
         ctx.fillStyle = "#22d3ee";
         ctx.beginPath();
-        ctx.arc(px, py, 2.5, 0, Math.PI * 2);
+        ctx.arc(px, py, 3.5, 0, Math.PI * 2);
         ctx.fill();
+        ctx.shadowBlur = 0;
       });
     };
 
@@ -1704,6 +1709,14 @@ export default function Dashboard() {
                   📊 Analytics
                 </button>
                 <button 
+                  onClick={() => setActiveMenu("Performance Dashboard")}
+                  className={`w-full flex items-center gap-2 px-3 py-1.5 text-[12.5px] rounded text-left transition ${
+                    activeMenu === "Performance Dashboard" ? "bg-[#0d2a14] text-[#10b981] border-l-2 border-[#10b981]" : "text-[#7a9bbf] hover:bg-[#111520] hover:text-white"
+                  }`}
+                >
+                  📈 Performance Dashboard
+                </button>
+                <button 
                   onClick={() => setActiveMenu("Risk Monitor")}
                   className={`w-full flex items-center gap-2 px-3 py-1.5 text-[12.5px] rounded text-left transition ${
                     activeMenu === "Risk Monitor" ? "bg-[#0d2a14] text-[#10b981] border-l-2 border-[#10b981]" : "text-[#7a9bbf] hover:bg-[#111520] hover:text-white"
@@ -2205,7 +2218,72 @@ Sideways (ADX < 20): Range/Rebound`}
             </div>
           </div>
 
-          {/* TAB 8: ⚙️ Settings (Telegram Bot Config & constants) */}
+          {/* TAB 8: 📈 Performance Dashboard */}
+          <div className={`flex-1 overflow-y-auto p-6 md:p-8 bg-[#080c12] space-y-6 ${activeMenu === "Performance Dashboard" ? "block" : "hidden"}`}>
+            <div className="border-b border-[#1e2d45] pb-4">
+              <h2 className="text-xl font-bold text-white">📈 AI Trading Performance Dashboard</h2>
+              <p className="text-xs text-[#7a9bbf] mt-1">Live metrics from the trading engines.</p>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+              
+              <div className="bg-[#111520] border border-[#1e2d45] rounded-xl p-4 text-center">
+                <div className="text-xs text-slate-400">Total Trades</div>
+                <div className="text-3xl font-bold text-white mt-2">{orders.length}</div>
+              </div>
+
+              <div className="bg-[#111520] border border-[#1e2d45] rounded-xl p-4 text-center">
+                <div className="text-xs text-slate-400">Win Rate</div>
+                <div className="text-3xl font-bold text-[#10b981] mt-2">
+                  {orders.length > 0 ? ((orders.filter(o => o.pnl > 0).length / orders.length) * 100).toFixed(1) : 0}%
+                </div>
+              </div>
+
+              <div className="bg-[#111520] border border-[#1e2d45] rounded-xl p-4 text-center">
+                <div className="text-xs text-slate-400">Total PnL</div>
+                <div className={`text-3xl font-bold mt-2 ${todayPnLSum >= 0 ? "text-[#10b981]" : "text-[#f87171]"}`}>
+                  ${todayPnLSum.toFixed(2)}
+                </div>
+              </div>
+
+              <div className="bg-[#111520] border border-[#1e2d45] rounded-xl p-4 text-center">
+                <div className="text-xs text-slate-400">Active Positions</div>
+                <div className="text-3xl font-bold text-[#3b82f6] mt-2">{activeTradesCount}</div>
+              </div>
+            </div>
+            
+            {/* Recent Trades Table */}
+            <div className="bg-[#111520] border border-[#1e2d45] rounded-xl p-4 mt-6">
+              <div className="text-xs text-white font-bold uppercase tracking-wider mb-4">Recent Executions</div>
+              <table className="w-full text-left text-xs text-slate-300">
+                  <thead>
+                    <tr className="border-b border-[#1e2d45] text-slate-400 font-mono">
+                      <th className="py-2">ID</th>
+                      <th className="py-2">Symbol</th>
+                      <th className="py-2">Action</th>
+                      <th className="py-2">Status</th>
+                      <th className="py-2 text-right">Entry Price</th>
+                      <th className="py-2 text-right">PnL</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800 font-mono">
+                    {orders.slice(0, 10).map((ord, idx) => (
+                      <tr key={idx} className="hover:bg-[#070a0f]/40">
+                        <td className="py-2 text-slate-500 truncate max-w-[100px]">{ord.id}</td>
+                        <td className="py-2 font-bold text-white">{ord.symbol}</td>
+                        <td className={`py-2 font-bold ${ord.action === 'BUY' ? 'text-emerald-400' : 'text-rose-400'}`}>{ord.action}</td>
+                        <td className="py-2">{ord.status}</td>
+                        <td className="py-2 text-right">{ord.entry_price}</td>
+                        <td className={`py-2 text-right font-bold ${ord.pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>{ord.pnl.toFixed(2)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+              </table>
+            </div>
+
+          </div>
+
+          {/* TAB 9: ⚙️ Settings (Telegram Bot Config & constants) */}
           <div className={`flex-1 overflow-y-auto p-6 md:p-8 bg-[#080c12] space-y-6 ${activeMenu === "Settings" ? "block" : "hidden"}`}>
             <div className="border-b border-[#1e2d45] pb-4">
               <h2 className="text-xl font-bold text-white">⚙️ ตั้งค่าความปลอดภัยและบัญชาการระบบ (System Settings)</h2>
