@@ -1,6 +1,10 @@
 import random
-from typing import List, Dict, Any
+import asyncio
+import logging
+from typing import List, Dict, Any, Optional
 from datetime import datetime
+
+logger = logging.getLogger("agents")
 
 # รายชื่อและโปรไฟล์ของ AI Agents ใน Virtual Office
 AGENTS = {
@@ -36,117 +40,261 @@ AGENTS = {
     }
 }
 
+# ─────────────────────────────────────────────────────────
+# Claude-Powered Agent Debate (Async, with streaming-ready steps)
+# ─────────────────────────────────────────────────────────
+
+async def generate_claude_agent_opinion(
+    agent_key: str,
+    symbol: str,
+    indicators: Dict[str, Any],
+    signal: Dict[str, Any],
+    risk: Dict[str, Any],
+    anthropic_key: str,
+    context_from_prev: str = ""
+) -> str:
+    """เรียก Claude API จริงสำหรับแต่ละ Agent ด้วย System Prompt เฉพาะทาง"""
+    try:
+        import anthropic
+
+        client = anthropic.AsyncAnthropic(api_key=anthropic_key)
+
+        latest = indicators.get("latest", 0)
+        trend = indicators.get("trend", "Unknown")
+        rsi = indicators.get("rsi", 50)
+        atr = indicators.get("atr", 0)
+        support = indicators.get("support", 0)
+        resistance = indicators.get("resistance", 0)
+        macd = indicators.get("macd", {})
+        action = signal.get("action", "WAIT")
+        confidence = signal.get("confidence", 0)
+        risk_passed = risk.get("passed", False)
+        risk_pct = risk.get("riskPct", 0)
+
+        # System Prompt เฉพาะทางของแต่ละ Agent
+        system_prompts = {
+            "CEO": (
+                f"คุณคือ CEO Agent หัวหน้าทีม AI Trading Virtual Office "
+                f"ทำหน้าที่เปิดประชุมและมอบหมายงานวิเคราะห์ "
+                f"พูดภาษาไทยอย่างเป็นทางการ กระชับ มีอำนาจ ความยาว 2-3 ประโยค "
+                f"ข้อมูล: {symbol} ราคา {latest} สัญญาณ {action} (confidence {confidence:.0%})"
+            ),
+            "Chart": (
+                f"คุณคือนักวิเคราะห์เทคนิคอล ผู้เชี่ยวชาญ EMA RSI MACD Bollinger Bands "
+                f"วิเคราะห์กราฟ {symbol} พูดภาษาไทย ใช้ตัวเลขจริง ความยาว 3-4 ประโยค\n"
+                f"ข้อมูล: ราคา={latest}, เทรนด์={trend}, RSI={rsi}, ATR={atr}, "
+                f"แนวรับ={support}, แนวต้าน={resistance}, "
+                f"MACD histogram={macd.get('histogram', 0):.4f}"
+            ),
+            "Crypto": (
+                f"คุณคือนักวิเคราะห์ตลาดคริปโตและ On-chain data ผู้เชี่ยวชาญ "
+                f"{'วิเคราะห์ ' + symbol + ' ในมุม crypto/DeFi ecosystem' if symbol in ['BTCUSDT','ETHUSDT','SOLUSDT','BNBUSDT'] else 'วิเคราะห์ความเชื่อมโยงระหว่าง ' + symbol + ' กับภาวะตลาดคริปโต'} "
+                f"พูดภาษาไทย ความยาว 3-4 ประโยค ใช้ศัพท์เทคนิค crypto\n"
+                f"ข้อมูลตลาด: ราคา={latest}, เทรนด์={trend}, ATR={atr}"
+            ),
+            "Wallet": (
+                f"คุณคือ Wallet Intelligence Analyst ผู้เชี่ยวชาญด้าน portfolio management และ liquidity "
+                f"ตรวจสอบยอดคงเหลือและ exposure ของพอร์ต วิเคราะห์ {symbol} "
+                f"พูดภาษาไทย ความยาว 2-3 ประโยค เน้นความปลอดภัยของเงินทุน\n"
+                f"ข้อมูล: risk_pct={risk_pct}%, ความเสี่ยงรวม={'ผ่าน' if risk_passed else 'เกินเกณฑ์'}"
+            ),
+            "Risk": (
+                f"คุณคือ Risk Manager ผู้คุมกฎเหล็กบริหารความเสี่ยง "
+                f"ต้องรายงานตัวเลขความเสี่ยงอย่างชัดเจน พูดภาษาไทย ความยาว 3-4 ประโยค\n"
+                f"ผลประเมิน: risk_pct={risk_pct}%, สถานะ={'✅ ผ่าน' if risk_passed else '❌ ระงับ'}\n"
+                f"checks: {[c['name'] + ': ' + ('✅' if c['pass'] else '❌') for c in risk.get('checks', [])]}"
+            ),
+            "News": (
+                f"คุณคือ News & Macro Analyst ผู้เชี่ยวชาญด้านข่าวเศรษฐกิจและ fundamental analysis "
+                f"วิเคราะห์ว่าข่าวมหภาคปัจจุบัน (Fed, GDP, inflation, geopolitics) ส่งผลต่อ {symbol} อย่างไร "
+                f"พูดภาษาไทย ความยาว 3-4 ประโยค ใช้ข้อมูลปัจจุบัน\n"
+                f"ข้อมูลตลาด: ราคา={latest}, เทรนด์={trend}"
+            )
+        }
+
+        context_note = f"\n\nบทสรุปจากการประชุมก่อนหน้า:\n{context_from_prev}" if context_from_prev else ""
+
+        response = await client.messages.create(
+            model="claude-sonnet-4-5",
+            max_tokens=250,
+            system=system_prompts.get(agent_key, system_prompts["CEO"]) + context_note,
+            messages=[{
+                "role": "user",
+                "content": f"กรุณาให้ความเห็นในฐานะ {AGENTS[agent_key]['role']} สำหรับ {symbol}"
+            }]
+        )
+        return response.content[0].text.strip()
+
+    except Exception as e:
+        logger.error(f"[Claude Agent] Error for {agent_key}: {e}")
+        return None  # จะ fallback ไปใช้ template
+
+
+def _build_template_message(agent_key: str, symbol: str, indicators: Dict, signal: Dict, risk: Dict) -> str:
+    """Template fallback เมื่อ Claude ไม่พร้อม"""
+    latest = indicators.get("latest", 0)
+    trend = indicators.get("trend", "Sideways")
+    rsi = indicators.get("rsi", 50)
+    atr = indicators.get("atr", 0)
+    support = indicators.get("support", 0)
+    resistance = indicators.get("resistance", 0)
+    action = signal.get("action", "WAIT")
+    confidence = signal.get("confidence", 0)
+    risk_passed = risk.get("passed", False)
+    risk_pct = risk.get("riskPct", 0)
+
+    templates = {
+        "CEO": (
+            f"สวัสดีทีมงาน เปิดเซสชันวิเคราะห์ {symbol} — ราคาปัจจุบัน {latest} "
+            f"สัญญาณเบื้องต้นระบุ [{action}] (confidence: {confidence:.0%}) "
+            f"ช่วยวิเคราะห์ในแผนกของตนด่วนครับ"
+        ),
+        "Chart": (
+            f"ฝั่ง Chart รายงาน: {symbol} อยู่ใน{trend} trend "
+            f"RSI={rsi} ATR={atr:.2f} แนวรับ={support:.2f} แนวต้าน={resistance:.2f} "
+            f"ราคาอยู่{'ใกล้แนวรับ เหมาะ BUY' if action=='BUY' else 'ใกล้แนวต้าน เหมาะ SELL' if action=='SELL' else 'กลางกรอบ ควรรอ'}"
+        ),
+        "Crypto": (
+            f"{'ตลาดคริปโตยืนยัน: Order Flow ฝั่ง ' + symbol + ' สอดคล้องกับสัญญาณ' if symbol in ['BTCUSDT','ETHUSDT','SOLUSDT'] else 'ไม่พบ correlation ผิดปกติระหว่าง ' + symbol + ' กับตลาดคริปโต'} "
+            f"Sentiment โดยรวมเป็น{'กระทิง' if trend=='Bullish' else 'หมี' if trend=='Bearish' else 'ทรงตัว'}"
+        ),
+        "Wallet": (
+            f"ตรวจสอบพอร์ตเรียบร้อย: risk exposure {risk_pct:.1f}% "
+            f"{'ยังมีพื้นที่รองรับคำสั่งนี้ได้ปลอดภัย' if risk_passed else 'เกินเกณฑ์ความปลอดภัย ควรระงับ'} "
+            f"ไม่พบ anomaly ในธุรกรรมขนาดใหญ่"
+        ),
+        "Risk": (
+            f"Risk Manager รายงาน: {symbol} สถานะ {'✅ APPROVED' if risk_passed else '❌ BLOCKED'} "
+            f"risk={risk_pct:.1f}% exposure={risk.get('exposurePct', 0):.1f}% "
+            f"{'ขนาด lot ปลอดภัยตามกฎ 2%' if risk_passed else 'ขัดกฎเหล็ก — ยกเลิกหรือหั่น lot'}"
+        ),
+        "News": (
+            f"Macro check: ไม่พบ high-impact event ในช่วง 3 ชม. ถัดไป "
+            f"ภาวะเงินเฟ้อและ Fed policy ยังส่งผลต่อ {symbol} ในระยะกลาง "
+            f"{'ปลอดภัยสำหรับการเทรด' if risk_passed else 'แนะนำหลีกเลี่ยงการเปิดออเดอร์ใหม่'}"
+        )
+    }
+    return templates.get(agent_key, f"วิเคราะห์ {symbol} เรียบร้อย")
+
+
+async def generate_thai_debate_async(
+    symbol: str,
+    indicators: Dict[str, Any],
+    signal: Dict[str, Any],
+    risk: Dict[str, Any],
+    anthropic_key: str = ""
+) -> List[Dict[str, Any]]:
+    """
+    สร้าง Debate แบบ Async — ใช้ Claude จริงถ้ามี API key
+    ถ้าไม่มี Claude → fallback ไปใช้ template ที่ปรับปรุงแล้ว
+    """
+    timestamp = datetime.now().isoformat()
+    debate_steps = []
+    has_claude = bool(anthropic_key) and "Anthropic" not in anthropic_key and len(anthropic_key) > 20
+
+    agent_order = ["CEO", "Chart", "Crypto", "Wallet", "Risk", "News", "CEO"]
+    context_summary = ""
+
+    for i, agent_key in enumerate(agent_order):
+        agent_info = AGENTS[agent_key]
+        is_final_ceo = (i == len(agent_order) - 1)
+
+        if has_claude:
+            if is_final_ceo:
+                # CEO สรุปพิเศษพร้อม context ทั้งหมด
+                final_prompt = f"สรุปมติที่ประชุมสำหรับ {symbol}: action={signal.get('action')}, risk={'ผ่าน' if risk.get('passed') else 'ไม่ผ่าน'}, confidence={signal.get('confidence', 0):.0%}"
+                message = await generate_claude_agent_opinion(
+                    "CEO", symbol, indicators, signal, risk,
+                    anthropic_key, context_from_prev=context_summary
+                )
+                if not message:
+                    message = _build_ceo_final_template(symbol, signal, risk)
+            else:
+                message = await generate_claude_agent_opinion(
+                    agent_key, symbol, indicators, signal, risk, anthropic_key
+                )
+                if not message:
+                    message = _build_template_message(agent_key, symbol, indicators, signal, risk)
+                # สะสม context
+                context_summary += f"\n{agent_info['name']}: {message[:100]}..."
+        else:
+            if is_final_ceo:
+                message = _build_ceo_final_template(symbol, signal, risk)
+            else:
+                message = _build_template_message(agent_key, symbol, indicators, signal, risk)
+
+        debate_steps.append({
+            "agent": agent_info["name"],
+            "role": agent_info["role"],
+            "avatar": agent_info["avatar"],
+            "message": message,
+            "timestamp": timestamp,
+            "powered_by": "claude" if has_claude else "template"
+        })
+
+    return debate_steps
+
+
+def _build_ceo_final_template(symbol: str, signal: Dict, risk: Dict) -> str:
+    """Template สำหรับ CEO สรุปสุดท้าย"""
+    action = signal.get("action", "WAIT")
+    risk_passed = risk.get("passed", False)
+    confidence = signal.get("confidence", 0)
+
+    if action == "WAIT":
+        return (
+            f"ขอบคุณทีมงานทุกท่าน สรุปสำหรับ {symbol}: "
+            f"ยังไม่มีสัญญาณที่สอดคล้องเพียงพอ ดำเนินโหมด Watch Mode ต่อ "
+            f"จะแจ้งเตือนทันทีเมื่อมีสัญญาณชัดเจนครับ"
+        )
+    elif risk_passed:
+        return (
+            f"มติเป็นเอกฉันท์! แผน [{action}] {symbol} ผ่านการประเมินทุกด้าน "
+            f"(confidence: {confidence:.0%}) "
+            f"กำลังส่งรายงานและปุ่มยืนยันไปยัง Telegram ทันทีครับ"
+        )
+    else:
+        return (
+            f"มติที่ประชุม {symbol}: แม้มีสัญญาณ {action} แต่ Risk Engine ระงับ "
+            f"ความปลอดภัยของทุนสำคัญกว่า — ยุติเซสชันนี้ครับ"
+        )
+
+
 def generate_thai_debate(
-    symbol: str, 
-    indicators: Dict[str, Any], 
-    signal: Dict[str, Any], 
+    symbol: str,
+    indicators: Dict[str, Any],
+    signal: Dict[str, Any],
     risk: Dict[str, Any]
 ) -> List[Dict[str, Any]]:
     """
-    จำลองการประชุมสัมมนาและถกเถียง (Debate) ของทีม AI ใน Virtual Office
-    โดยอ้างอิงจากราคาปัจจุบัน สัญญาณ และผลลัพธ์ความเสี่ยง
+    Sync wrapper สำหรับ backward compatibility —
+    ใช้ template เมื่อถูกเรียกแบบ sync (ไม่มี await)
     """
-    latest = indicators["latest"]
-    trend = indicators["trend"]
-    rsi = indicators["rsi"]
-    atr = indicators["atr"]
-    support = indicators["support"]
-    resistance = indicators["resistance"]
-    action = signal["action"]
-    
-    debate_steps = []
     timestamp = datetime.now().isoformat()
-    
-    # ขั้นที่ 1: CEO เริ่มต้นการประชุม
+    debate_steps = []
+    agent_order = ["CEO", "Chart", "Crypto", "Wallet", "Risk", "News"]
+
+    for agent_key in agent_order:
+        agent_info = AGENTS[agent_key]
+        message = _build_template_message(agent_key, symbol, indicators, signal, risk)
+        debate_steps.append({
+            "agent": agent_info["name"],
+            "role": agent_info["role"],
+            "avatar": agent_info["avatar"],
+            "message": message,
+            "timestamp": timestamp,
+            "powered_by": "template"
+        })
+
+    # CEO สรุป
+    ceo_info = AGENTS["CEO"]
     debate_steps.append({
-        "agent": AGENTS["CEO"]["name"],
-        "role": AGENTS["CEO"]["role"],
-        "avatar": AGENTS["CEO"]["avatar"],
-        "message": f"สวัสดีทีมงานทุกคน ยินดีต้อนรับสู่เซสชันการวิเคราะห์ด่วนสำหรับ {symbol} ราคาปัจจุบันอยู่ที่ {latest} ระบบ Rule Engine ของเราส่งสัญญาณเบื้องต้นเป็น [{action}] ช่วยกันวิเคราะห์ในแผนกตนเองด่วนครับ!",
-        "timestamp": timestamp
+        "agent": ceo_info["name"],
+        "role": ceo_info["role"],
+        "avatar": ceo_info["avatar"],
+        "message": _build_ceo_final_template(symbol, signal, risk),
+        "timestamp": timestamp,
+        "powered_by": "template"
     })
-    
-    # ขั้นที่ 2: Chart AI แสดงความคิดเห็น
-    if symbol in ["XAUUSD", "EURUSD"]:
-        chart_msg = f"ฝั่ง Forex ขอรายงานครับ จากกราฟเทคนิค {symbol} กำลังอยู่ในช่วงเทรนด์ {trend} (คำนวณจาก EMA 12/26) ค่า RSI ล่าสุดวัดได้ {rsi} และระดับความผันผวน ATR อยู่ที่ {atr} ตอนนี้ราคาเข้าใกล้โซนแนวรับที่ {support} ถือเป็นโอกาสที่ดีในการพิจารณาแผนครับ"
-    else:
-        chart_msg = f"สำหรับการเคลื่อนไหวทางเทคนิคของ {symbol} ปัจจุบันค่าความผันผวน ATR อยู่ที่ {atr} สภาพเส้น EMA บ่งบอกทิศทาง {trend} ส่วนความแข็งแกร่ง RSI อยู่ที่ {rsi} ครับ ระดับแนวต้านสำคัญมองไว้ที่ {resistance}"
-        
-    debate_steps.append({
-        "agent": AGENTS["Chart"]["name"],
-        "role": AGENTS["Chart"]["role"],
-        "avatar": AGENTS["Chart"]["avatar"],
-        "message": chart_msg,
-        "timestamp": timestamp
-    })
-    
-    # ขั้นที่ 3: Crypto Analyst AI แสดงความคิดเห็น (เน้นพฤติกรรมวอลลุ่ม)
-    if symbol in ["BTCUSDT", "ETHUSDT"]:
-        crypto_msg = f"โต๊ะคริปโตยืนยันเพิ่มครับ! สำหรับ {symbol} วอลลุ่มการซื้อขายใน Binance 24 ชม. ที่ผ่านมาค่อนข้างแน่นหนา ตรวจสอบฝั่ง Order Book พบกำแพงแรงซื้อหนาแน่นแถวๆ ระดับจิตวิทยา สอดรับกับสัญญาณเชิงเทคนิคของ Chart AI ครับ"
-    else:
-        crypto_msg = f"ถึงแม้ {symbol} จะเป็นสินทรัพย์ดั้งเดิม แต่ผมได้ตรวจสอบความเชื่อมโยงกับดัชนีคริปโตแล้ว พบว่าความสัมพันธ์ (Correlation) สภาพคล่องโดยรวมยังเอื้อให้ตลาดเคลื่อนตัวในกรอบปกติครับ ไม่มีสัญญาณขายตื่นตระหนก (Panic Sell) จากฝั่งคริปโต"
-        
-    debate_steps.append({
-        "agent": AGENTS["Crypto"]["name"],
-        "role": AGENTS["Crypto"]["role"],
-        "avatar": AGENTS["Crypto"]["avatar"],
-        "message": crypto_msg,
-        "timestamp": timestamp
-    })
-    
-    # ขั้นที่ 4: Wallet Intel AI ตรวจเช็คกระเป๋าและสินทรัพย์รวม
-    wallet_msg = f"จากการสแกนยอดคงเหลือใน Team Ecosystem ขณะนี้บัญชีลงทุนพอร์ตรวม (Net Worth) ของเรามีความมั่นคงดี ตรวจไม่พบการทำธุรกรรมขนาดใหญ่ผิดปกติของกลุ่มวาฬ (Whale Wallets) ในสินทรัพย์ {symbol} ทุนสำรองกระแสเงินสดของเราพร้อมรองรับคำสั่งนี้ได้ทันที"
-    debate_steps.append({
-        "agent": AGENTS["Wallet"]["name"],
-        "role": AGENTS["Wallet"]["role"],
-        "avatar": AGENTS["Wallet"]["avatar"],
-        "message": wallet_msg,
-        "timestamp": timestamp
-    })
-    
-    # ขั้นที่ 5: Risk AI ตรวจสอบกฎเหล็กบริหารความเสี่ยง
-    passed_txt = "ผ่านการประเมิน 🟢" if risk["passed"] else "ถูกปฏิเสธ/ระงับชั่วคราว 🔴"
-    risk_msg = f"แผนกความเสี่ยงตรวจสอบข้อมูลแล้วครับ คำร้องขอเปิดไม้ {action} สำหรับ {symbol} มีสถานะความเสี่ยง: {passed_txt}\n"
-    risk_msg += f"- ขนาดความเสี่ยงสะสมต่อพอร์ต: {risk['riskPct']}% (ขีดจำกัดสูงสุด 2%)\n"
-    risk_msg += f"- สัดส่วนการถือครองทั้งหมด (Exposure): {risk['exposurePct']}% ของพอร์ตสุทธิ\n"
-    
-    if risk["passed"]:
-        risk_msg += "ความเสี่ยงอยู่ในระดับยอมรับได้ แนะนำให้ใช้สัดส่วน Lot Sizing นี้ตามแผนได้เลยครับ"
-    else:
-        risk_msg += "แจ้งเตือน! พารามิเตอร์บางตัวขัดต่อกฎเหล็ก (เช่น ไม่มีสัญญาณเทรดหลัก หรือ ความเสี่ยงเกินเกณฑ์) ไม้นี้ต้องยกเลิกหรือหั่นล็อตลงเพื่อความปลอดภัยครับ"
-        
-    debate_steps.append({
-        "agent": AGENTS["Risk"]["name"],
-        "role": AGENTS["Risk"]["role"],
-        "avatar": AGENTS["Risk"]["avatar"],
-        "message": risk_msg,
-        "timestamp": timestamp
-    })
-    
-    # ขั้นที่ 6: News/Audit AI เช็คตารางข่าว
-    news_msg = "จากการมอนิเตอร์ปฏิทินข่าวเศรษฐกิจของวันนี้ ในช่วง 3 ชั่วโมงถัดไปไม่มีรายงานการประกาศตัวเลขแรงงานสำคัญ (เช่น Non-Farm Payrolls) หรือดัชนีเงินเฟ้อ CPI ที่จะสร้างความผันผวนรุนแรง และไม่มีสัญญาณผิดปกติ (Anomaly) ในระบบการทำราคาของโบรกเกอร์ด้วยครับ ปลอดภัยสำหรับการเทรด"
-    debate_steps.append({
-        "agent": AGENTS["News"]["name"],
-        "role": AGENTS["News"]["role"],
-        "avatar": AGENTS["News"]["avatar"],
-        "message": news_msg,
-        "timestamp": timestamp
-    })
-    
-    # ขั้นที่ 7: CEO สรุปประชุม
-    if action == "WAIT":
-        ceo_final = f"ขอบคุณทีมงานทุกคน สรุปผลการประชุมสำหรับ {symbol}: เนื่องจากพารามิเตอร์ตลาดยังไม่สอดคล้องตรงตามข้อกำหนดหลักของการเข้าเทรด เราจะดำเนินโหมดเฝ้าระวังภัย (Watch Mode) ต่อไป และยังไม่มีการส่งสัญญาณขออนุมัติถึงคุณโทนี่ในรอบนี้ครับ"
-    elif risk["passed"]:
-        ceo_final = f"วิเคราะห์ดีมากทุกคน! แผนการเทรด [BUY] {symbol} ได้รับมติเป็นเอกฉันท์และผ่านด่านประเมินความเสี่ยงความเสี่ยงเรียบร้อย ผมกำลังส่งใบสรุปคำสั่งและปุ่มอนุมัติผ่านหน้าแชท Telegram ของคุณโทนี่ทันที โปรดเตรียมความพร้อมสำหรับการยิงคำสั่งซื้อขายจริงเมื่อได้รับการตอบรับครับ"
-    else:
-        ceo_final = f"มติที่ประชุมสำหรับ {symbol} รอบนี้ถูกระงับ! แม้จะมีสัญญาณทางเทคนิคแต่ขัดแย้งกับข้อบังคับด้านการบริหารความเสี่ยงความเสี่ยง (Risk Rules) ของเรา ความปลอดภัยของทุนต้องมาก่อน ขอยุติเซสชันรอบนี้ครับ"
-        
-    debate_steps.append({
-        "agent": AGENTS["CEO"]["name"],
-        "role": AGENTS["CEO"]["role"],
-        "avatar": AGENTS["CEO"]["avatar"],
-        "message": ceo_final,
-        "timestamp": timestamp
-    })
-    
+
     return debate_steps
