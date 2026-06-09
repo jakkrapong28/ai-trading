@@ -480,6 +480,25 @@ export default function Dashboard() {
     }
   };
 
+  const handleToggleMode = async () => {
+    const newMode = mode === "auto" ? "watch" : "auto";
+    try {
+      const res = await fetch("http://localhost:8000/api/change-mode", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: newMode })
+      });
+      const data = await res.json();
+      if (data.status === "success") {
+        setMode(newMode);
+        addChatMessage("system", `⚙️ เปลี่ยนระบบเป็นโหมด: ${newMode.toUpperCase()}`);
+      }
+    } catch (e) {
+      console.error(e);
+      addChatMessage("system", "❌ เกิดข้อผิดพลาดในการเปลี่ยนโหมด");
+    }
+  };
+
   const handleApprove = async () => {
     try {
       const res = await fetch("http://localhost:8000/api/approve", {

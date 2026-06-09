@@ -3,6 +3,8 @@ import random
 import statistics
 from typing import List, Dict, Any, Optional
 from collections import deque
+import pandas as pd
+import numpy as np
 
 # ค่าคอนฟิกความเสี่ยงตามนโยบายระบบเทรดของคุณโทนี่
 RISK_CONFIG = {
@@ -67,92 +69,70 @@ def generate_price_history(symbol: str, length: int = 96) -> List[float]:
 # ─────────────────────────────────────────────────────────
 
 def calculate_ema(values: List[float], period: int) -> List[float]:
-    """Exponential Moving Average"""
+    """Exponential Moving Average using Pandas"""
     if not values or len(values) < period:
         return values or []
-    multiplier = 2.0 / (period + 1)
-    ema_values = [values[0]]
-    for val in values[1:]:
-        new_ema = val * multiplier + ema_values[-1] * (1.0 - multiplier)
-        ema_values.append(new_ema)
-    return ema_values
+    s = pd.Series(values)
+    return s.ewm(span=period, adjust=False).mean().fillna(0).tolist()
 
 def calculate_rsi(values: List[float], period: int = 14) -> float:
-    """Relative Strength Index (Wilder's smoothing)"""
+    """Relative Strength Index using Pandas"""
     if len(values) <= period:
         return 50.0
-    gains = 0.0
-    losses = 0.0
-    for i in range(1, period + 1):
-        diff = values[i] - values[i-1]
-        if diff > 0:
-            gains += diff
-        else:
-            losses -= diff
-
-    avg_gain = gains / period
-    avg_loss = losses / period
-
-    for i in range(period + 1, len(values)):
-        diff = values[i] - values[i-1]
-        gain = max(diff, 0.0)
-        loss = max(-diff, 0.0)
-        avg_gain = (avg_gain * (period - 1) + gain) / period
-        avg_loss = (avg_loss * (period - 1) + loss) / period
-
-    if avg_loss == 0:
-        return 100.0
-    rs = avg_gain / avg_loss
-    return round(100.0 - (100.0 / (1.0 + rs)), 1)
+    s = pd.Series(values)
+    delta = s.diff()
+    gain = (delta.where(delta > 0, 0)).ewm(alpha=1/period, adjust=False).mean()
+    loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/period, adjust=False).mean()
+    rs = gain / loss
+    rsi = 100 - (100 / (1 + rs))
+    val = rsi.iloc[-1]
+    return float(round(val, 1)) if not np.isnan(val) else 50.0
 
 def calculate_macd(values: List[float]) -> Dict[str, float]:
-    """MACD = EMA12 - EMA26, Signal = EMA9 of MACD"""
+    """MACD using Pandas"""
     if len(values) < 26:
         return {"macd": 0.0, "signal": 0.0, "histogram": 0.0}
-    ema12 = calculate_ema(values, 12)
-    ema26 = calculate_ema(values, 26)
-    macd_line = [ema12[i] - ema26[i] for i in range(len(ema26))]
-    signal_line = calculate_ema(macd_line, 9)
-    macd_val = macd_line[-1]
-    signal_val = signal_line[-1]
+    s = pd.Series(values)
+    ema12 = s.ewm(span=12, adjust=False).mean()
+    ema26 = s.ewm(span=26, adjust=False).mean()
+    macd_line = ema12 - ema26
+    signal_line = macd_line.ewm(span=9, adjust=False).mean()
+    macd_val = macd_line.iloc[-1]
+    signal_val = signal_line.iloc[-1]
     return {
-        "macd": round(macd_val, 4),
-        "signal": round(signal_val, 4),
-        "histogram": round(macd_val - signal_val, 4)
+        "macd": float(round(macd_val, 4)),
+        "signal": float(round(signal_val, 4)),
+        "histogram": float(round(macd_val - signal_val, 4))
     }
 
 def calculate_atr(prices: List[float], period: int = 14) -> float:
-    """
-    Average True Range — approximated from close-to-close differences
-    (เนื่องจากไม่มี OHLCV ใช้ |close[i] - close[i-1]| เป็น True Range estimate)
-    """
+    """ATR proxy using Pandas"""
     if len(prices) < 2:
         return SYMBOLS.get("XAUUSD", {}).get("volatility", 1.0)
-    # True Range estimate: max(|H-L|, |H-PC|, |L-PC|) approximated via close ranges
-    ranges = []
-    for i in range(1, len(prices)):
-        # Estimate high/low from adjacent closes
-        hi = max(prices[i], prices[i-1])
-        lo = min(prices[i], prices[i-1])
-        tr = hi - lo  # close-to-close range as TR proxy
-        ranges.append(tr)
-
-    last_ranges = ranges[-period:]
-    return round(sum(last_ranges) / len(last_ranges), 4) if last_ranges else 1.0
+    s = pd.Series(prices)
+    tr = s.diff().abs()
+    atr = tr.rolling(window=period, min_periods=1).mean()
+    val = atr.iloc[-1]
+    return float(round(val, 4)) if not np.isnan(val) else 1.0
 
 def calculate_bollinger_bands(values: List[float], period: int = 20, std_mult: float = 2.0) -> Dict[str, float]:
-    """Bollinger Bands"""
+    """Bollinger Bands using Pandas"""
     if len(values) < period:
         last = values[-1] if values else 0
         return {"upper": last, "middle": last, "lower": last, "width": 0}
-    recent = values[-period:]
-    mean = sum(recent) / period
-    std = statistics.stdev(recent)
+    s = pd.Series(values)
+    mean = s.rolling(window=period).mean()
+    std = s.rolling(window=period).std()
+    val_mean = mean.iloc[-1]
+    val_std = std.iloc[-1]
+    if np.isnan(val_mean):
+        val_mean = values[-1]
+        val_std = 0
     return {
-        "upper": round(mean + std_mult * std, 4),
-        "middle": round(mean, 4),
-        "lower": round(mean - std_mult * std, 4),
-        "width": round(std_mult * 2 * std, 4)
+        "upper": float(round(val_mean + std_mult * val_std, 4)),
+        "middle": float(round(val_mean, 4)),
+        "lower": float(round(val_mean - std_mult * val_std, 4)),
+        "width": float(round(std_mult * 2 * val_std, 4))
     }
 
 def get_market_indicators(prices: List[float], symbol: str) -> Dict[str, Any]:
@@ -163,7 +143,7 @@ def get_market_indicators(prices: List[float], symbol: str) -> Dict[str, Any]:
 
     fast = calculate_ema(prices, 12)
     slow = calculate_ema(prices, 26)
-    latest = prices[-1]
+    latest = float(prices[-1])
     rsi_val = calculate_rsi(prices, 14)
     atr_val = calculate_atr(prices, 14)
     macd_data = calculate_macd(prices)
@@ -171,8 +151,8 @@ def get_market_indicators(prices: List[float], symbol: str) -> Dict[str, Any]:
 
     # แนวรับแนวต้าน — ใช้ช่วง 22 แท่งล่าสุด
     recent_prices = prices[-22:]
-    support = min(recent_prices)
-    resistance = max(recent_prices)
+    support = float(min(recent_prices))
+    resistance = float(max(recent_prices))
 
     # EMA Trend
     if fast[-1] > slow[-1] * 1.001:
@@ -199,7 +179,7 @@ def get_market_indicators(prices: List[float], symbol: str) -> Dict[str, Any]:
 # Strategy Rule Engine (ไม่มี Random Fallback)
 # ─────────────────────────────────────────────────────────
 
-def evaluate_strategy_rules(indicators: Dict[str, Any], symbol: str) -> Dict[str, Any]:
+def evaluate_strategy_rules(indicators: Dict[str, Any], symbol: str, macro_trend_1h: Optional[str] = None) -> Dict[str, Any]:
     """
     ประเมินสัญญาณเทรดจากกฎทางเทคนิค
     - ไม่มี random fallback อีกต่อไป
@@ -273,6 +253,17 @@ def evaluate_strategy_rules(indicators: Dict[str, Any], symbol: str) -> Dict[str
         confidence = 0.70
         reason = f"RSI Oversold ({rsi_val}) และราคาใกล้แนวรับ {support:.2f} — สัญญาณ BUY แบบ Reversal"
 
+    # ─── Multi-Timeframe Trend Filter ───
+    if macro_trend_1h:
+        if macro_trend_1h == "Bullish" and action == "SELL":
+            action = "WAIT"
+            reason = f"แนวโน้มหลัก 1 ชั่วโมงเป็นขาขึ้น (Bullish) แต่สัญญาณระยะสั้นเป็น SELL — ปฏิเสธตามกฎเทรดตามแนวโน้ม"
+            confidence = 0.0
+        elif macro_trend_1h == "Bearish" and action == "BUY":
+            action = "WAIT"
+            reason = f"แนวโน้มหลัก 1 ชั่วโมงเป็นขาลง (Bearish) แต่สัญญาณระยะสั้นเป็น BUY — ปฏิเสธตามกฎเทรดตามแนวโน้ม"
+            confidence = 0.0
+
     return {
         "action": action,
         "reason": reason,
@@ -323,9 +314,10 @@ def check_trade_risk(
     price: float,
     lot: float,
     stop_distance: float,
-    spread: float
+    spread: float,
+    circuit_breaker_triggered: bool = False
 ) -> Dict[str, Any]:
-    """ตรวจสอบกฎเหล็กบริหารความเสี่ยง 5 ประการ"""
+    """ตรวจสอบกฎเหล็กบริหารความเสี่ยง 6 ประการ"""
     spec = SYMBOLS.get(symbol, SYMBOLS["XAUUSD"])
 
     risk_dollars = lot * stop_distance * spec["tickValue"] * 100
@@ -335,14 +327,15 @@ def check_trade_risk(
     exposure_pct = (exposure_dollars / RISK_CONFIG["equity"]) * 100
 
     checks = [
-        {"name": "มีสัญญาณซื้อขายหลัก (ไม่ใช่ WAIT)", "pass": action in ["BUY", "SELL"]},
-        {"name": "ความเสี่ยงต่อไม้ไม่เกิน 2% (2% Rule)", "pass": risk_pct <= RISK_CONFIG["maxRiskPerTradePct"]},
-        {"name": "มีจุดตัดขาดทุนขั้นต่ำ (Stop Loss > 10 pips)", "pass": stop_distance >= RISK_CONFIG["minStopDistance"]},
-        {"name": "ค่าสเปรดไม่กว้างเกินเกณฑ์ (Spread Limit)", "pass": spread <= RISK_CONFIG["maxSpread"]},
-        {"name": "ขนาดพอร์ตถือครองรวมไม่เกิน 20% (Exposure Limit)", "pass": exposure_pct <= RISK_CONFIG["maxOpenExposurePct"]}
+        {"name": "มีสัญญาณซื้อขายหลัก (ไม่ใช่ WAIT)", "pass": bool(action in ["BUY", "SELL"])},
+        {"name": "ความเสี่ยงต่อไม้ไม่เกิน 2% (2% Rule)", "pass": bool(risk_pct <= RISK_CONFIG["maxRiskPerTradePct"])},
+        {"name": "มีจุดตัดขาดทุนขั้นต่ำ (Stop Loss > 10 pips)", "pass": bool(stop_distance >= RISK_CONFIG["minStopDistance"])},
+        {"name": "ค่าสเปรดไม่กว้างเกินเกณฑ์ (Spread Limit)", "pass": bool(spread <= RISK_CONFIG["maxSpread"])},
+        {"name": "ขนาดพอร์ตถือครองรวมไม่เกิน 20% (Exposure Limit)", "pass": bool(exposure_pct <= RISK_CONFIG["maxOpenExposurePct"])},
+        {"name": "สถานะระบบความปลอดภัย (Circuit Breaker ไม่ทำงาน)", "pass": bool(not circuit_breaker_triggered)}
     ]
 
-    passed = all(check["pass"] for check in checks)
+    passed = bool(all(check["pass"] for check in checks))
 
     return {
         "passed": passed,
