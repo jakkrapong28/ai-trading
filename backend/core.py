@@ -17,17 +17,77 @@ RISK_CONFIG = {
 }
 
 SYMBOLS = {
-    "XAUUSD": {"base": 2342.0, "volatility": 7.5, "tickValue": 1.0, "decimals": 2},
-    "EURUSD": {"base": 1.0832, "volatility": 0.0028, "tickValue": 10.0, "decimals": 5},
-    "BTCUSDT": {"base": 68150.0, "volatility": 340.0, "tickValue": 0.1, "decimals": 2},
-    "ETHUSDT": {"base": 3570.0, "volatility": 42.0, "tickValue": 0.1, "decimals": 2},
-    "SOLUSDT": {"base": 170.0, "volatility": 5.0, "tickValue": 0.1, "decimals": 2},
-    "TSLA": {"base": 180.0, "volatility": 6.0, "tickValue": 1.0, "decimals": 2},
-    "AAPL": {"base": 190.0, "volatility": 3.5, "tickValue": 1.0, "decimals": 2},
-    "NVDA": {"base": 120.0, "volatility": 4.5, "tickValue": 1.0, "decimals": 2},
-    "MSFT": {"base": 420.0, "volatility": 8.0, "tickValue": 1.0, "decimals": 2},
-    "AMZN": {"base": 185.0, "volatility": 4.0, "tickValue": 1.0, "decimals": 2}
+    "XAUUSD": {"base": 2342.0, "volatility": 7.5, "tickValue": 1.0, "decimals": 2, "contractSize": 100, "assetClass": "metal"},
+    "EURUSD": {"base": 1.0832, "volatility": 0.0028, "tickValue": 10.0, "decimals": 5, "contractSize": 100000, "assetClass": "forex"},
+    "BTCUSDT": {"base": 68150.0, "volatility": 340.0, "tickValue": 1.0, "decimals": 2, "contractSize": 1, "assetClass": "crypto"},
+    "ETHUSDT": {"base": 3570.0, "volatility": 42.0, "tickValue": 1.0, "decimals": 2, "contractSize": 1, "assetClass": "crypto"},
+    "SOLUSDT": {"base": 170.0, "volatility": 5.0, "tickValue": 1.0, "decimals": 2, "contractSize": 1, "assetClass": "crypto"},
+    "TSLA": {"base": 180.0, "volatility": 6.0, "tickValue": 1.0, "decimals": 2, "contractSize": 1, "assetClass": "stock"},
+    "AAPL": {"base": 190.0, "volatility": 3.5, "tickValue": 1.0, "decimals": 2, "contractSize": 1, "assetClass": "stock"},
+    "NVDA": {"base": 120.0, "volatility": 4.5, "tickValue": 1.0, "decimals": 2, "contractSize": 1, "assetClass": "stock"},
+    "MSFT": {"base": 420.0, "volatility": 8.0, "tickValue": 1.0, "decimals": 2, "contractSize": 1, "assetClass": "stock"},
+    "AMZN": {"base": 185.0, "volatility": 4.0, "tickValue": 1.0, "decimals": 2, "contractSize": 1, "assetClass": "stock"}
 }
+
+# RSI thresholds per symbol — calibrate via `python backend/backtest.py optimize`
+# Calibrated via: python backend/backtest.py optimize (30d Yahoo 1h)
+STRATEGY_CONFIG: Dict[str, Dict[str, Any]] = {
+    "XAUUSD": {
+        "rsi_sell_early": 75, "rsi_sell_full": 78,
+        "rsi_buy_early": 22, "rsi_buy_full": 18,
+        "volume_confirm_min": 1.15,
+        "trend_min_score": 3, "trend_rsi_buy_max": 65, "trend_rsi_sell_min": 35,
+    },
+    "BTCUSDT": {
+        "rsi_sell_early": 72, "rsi_sell_full": 76,
+        "rsi_buy_early": 25, "rsi_buy_full": 24,
+        "volume_confirm_min": 1.20,
+        "trend_min_score": 3, "trend_rsi_buy_max": 62, "trend_rsi_sell_min": 38,
+    },
+    "ETHUSDT": {
+        "rsi_sell_early": 70, "rsi_sell_full": 74,
+        "rsi_buy_early": 22, "rsi_buy_full": 20,
+        "volume_confirm_min": 1.18,
+        "trend_min_score": 3, "trend_rsi_buy_max": 63, "trend_rsi_sell_min": 37,
+    },
+}
+
+_DEFAULT_STRATEGY = {
+    "rsi_sell_early": 75, "rsi_sell_full": 78,
+    "rsi_buy_early": 25, "rsi_buy_full": 22,
+    "volume_confirm_min": 1.15,
+    "trend_min_score": 3, "trend_rsi_buy_max": 65, "trend_rsi_sell_min": 35,
+}
+
+def get_strategy_config(symbol: str) -> Dict[str, Any]:
+    return {**_DEFAULT_STRATEGY, **STRATEGY_CONFIG.get(symbol, {})}
+
+YAHOO_SYMBOL_MAP = {
+    "XAUUSD": "GC=F", "BTCUSDT": "BTC-USD", "ETHUSDT": "ETH-USD",
+    "SOLUSDT": "SOL-USD", "EURUSD": "EURUSD=X",
+}
+
+def compute_macro_trend_from_closes(closes: List[float]) -> Optional[str]:
+    """คำนวณแนวโน้ม 1h จาก close series (ใช้ใน backtest)"""
+    if len(closes) < 26:
+        return None
+    s = pd.Series(closes, dtype="float64")
+    ema12 = s.ewm(span=12, adjust=False).mean().iloc[-1]
+    ema26 = s.ewm(span=26, adjust=False).mean().iloc[-1]
+    if ema12 > ema26 * 1.0005:
+        return "Bullish"
+    if ema12 < ema26 * 0.9995:
+        return "Bearish"
+    return "Sideways"
+
+def trade_pnl(
+    symbol: str, action: str, entry: float, exit_price: float, lot: float
+) -> float:
+    """คำนวณ PnL ตาม contract size จริง"""
+    spec = SYMBOLS.get(symbol, SYMBOLS["XAUUSD"])
+    contract_size = spec.get("contractSize", 100)
+    diff = exit_price - entry if action == "BUY" else entry - exit_price
+    return diff * lot * contract_size
 
 # ─────────────────────────────────────────────────────────
 # Continuous Price History Store (deque-based, ไม่ reset)
@@ -91,29 +151,69 @@ def calculate_rsi(values: List[float], period: int = 14) -> float:
 def calculate_macd(values: List[float]) -> Dict[str, float]:
     """MACD using Pandas"""
     if len(values) < 26:
-        return {"macd": 0.0, "signal": 0.0, "histogram": 0.0}
+        return {"macd": 0.0, "signal": 0.0, "histogram": 0.0, "prev_histogram": 0.0}
     s = pd.Series(values)
     ema12 = s.ewm(span=12, adjust=False).mean()
     ema26 = s.ewm(span=26, adjust=False).mean()
     macd_line = ema12 - ema26
     signal_line = macd_line.ewm(span=9, adjust=False).mean()
+    histogram = macd_line - signal_line
     macd_val = macd_line.iloc[-1]
     signal_val = signal_line.iloc[-1]
+    hist_val = histogram.iloc[-1]
+    prev_hist_val = histogram.iloc[-2] if len(histogram) >= 2 else hist_val
     return {
         "macd": float(round(macd_val, 4)),
         "signal": float(round(signal_val, 4)),
-        "histogram": float(round(macd_val - signal_val, 4))
+        "histogram": float(round(hist_val, 4)),
+        "prev_histogram": float(round(prev_hist_val, 4))
     }
 
-def calculate_atr(prices: List[float], period: int = 14) -> float:
-    """ATR proxy using Pandas"""
-    if len(prices) < 2:
-        return SYMBOLS.get("XAUUSD", {}).get("volatility", 1.0)
-    s = pd.Series(prices)
-    tr = s.diff().abs()
-    atr = tr.rolling(window=period, min_periods=1).mean()
+def _wilder_atr(tr: pd.Series, period: int = 14) -> float:
+    """Wilder-smoothed ATR (standard definition)."""
+    atr = tr.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
     val = atr.iloc[-1]
     return float(round(val, 4)) if not np.isnan(val) else 1.0
+
+def calculate_atr(prices: List[float], period: int = 14) -> float:
+    """ATR fallback from close-only series (less accurate than OHLC)."""
+    if len(prices) < 2:
+        return SYMBOLS.get("XAUUSD", {}).get("volatility", 1.0)
+    s = pd.Series(prices, dtype="float64")
+    tr = s.diff().abs()
+    return _wilder_atr(tr, period)
+
+def calculate_atr_ohlc(ohlc: Any, period: int = 14) -> float:
+    """True ATR from OHLC (high-low + gaps), Wilder-smoothed."""
+    if isinstance(ohlc, pd.DataFrame):
+        required = {"high", "low", "close"}
+        if required.issubset(set(ohlc.columns)) and len(ohlc) >= 2:
+            high = pd.Series(ohlc["high"], dtype="float64")
+            low = pd.Series(ohlc["low"], dtype="float64")
+            close = pd.Series(ohlc["close"], dtype="float64")
+            prev_close = close.shift(1)
+            tr = pd.concat([
+                high - low,
+                (high - prev_close).abs(),
+                (low - prev_close).abs()
+            ], axis=1).max(axis=1)
+            return _wilder_atr(tr, period)
+    if isinstance(ohlc, (list, tuple)):
+        return calculate_atr(list(ohlc), period)
+    return SYMBOLS.get("XAUUSD", {}).get("volatility", 1.0)
+
+def ticks_to_ohlc(prices: List[float], bar_size: int = 4) -> pd.DataFrame:
+    """สร้าง pseudo-OHLC จาก tick/close list เมื่อไม่มี candle จริง"""
+    if len(prices) < bar_size:
+        return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+    rows = []
+    for i in range(0, len(prices) - bar_size + 1, bar_size):
+        chunk = prices[i:i + bar_size]
+        rows.append({
+            "open": chunk[0], "high": max(chunk), "low": min(chunk),
+            "close": chunk[-1], "volume": float(len(chunk))
+        })
+    return pd.DataFrame(rows)
 
 def calculate_bollinger_bands(values: List[float], period: int = 20, std_mult: float = 2.0) -> Dict[str, float]:
     """Bollinger Bands using Pandas"""
@@ -135,32 +235,55 @@ def calculate_bollinger_bands(values: List[float], period: int = 20, std_mult: f
         "width": float(round(std_mult * 2 * val_std, 4))
     }
 
-def get_market_indicators(prices: List[float], symbol: str) -> Dict[str, Any]:
-    """คำนวณอินดิเคเตอร์ภาพรวมตลาด"""
+def get_market_indicators(prices: Any, symbol: str) -> Dict[str, Any]:
+    """คำนวณอินดิเคเตอร์ภาพรวมตลาด — ใช้ OHLC จริงเมื่อมี"""
+    ohlc: Optional[pd.DataFrame] = None
+    if isinstance(prices, pd.DataFrame):
+        ohlc = prices.copy()
+        prices = ohlc["close"].dropna().astype(float).tolist()
+    elif isinstance(prices, list) and len(prices) >= 8:
+        ohlc = ticks_to_ohlc(prices, bar_size=4)
+        if len(ohlc) >= 2:
+            prices = ohlc["close"].astype(float).tolist()
+
     if not prices:
         spec = SYMBOLS.get(symbol, SYMBOLS["XAUUSD"])
-        return {"latest": spec["base"], "rsi": 50.0, "atr": spec["volatility"], "trend": "Sideways", "support": spec["base"], "resistance": spec["base"]}
+        return {
+            "latest": spec["base"], "rsi": 50.0, "atr": spec["volatility"],
+            "trend": "Sideways", "support": spec["base"], "resistance": spec["base"],
+            "volume": {"current": 0.0, "avg_20": 0.0, "ratio": 1.0}
+        }
 
     fast = calculate_ema(prices, 12)
     slow = calculate_ema(prices, 26)
     latest = float(prices[-1])
     rsi_val = calculate_rsi(prices, 14)
-    atr_val = calculate_atr(prices, 14)
+    atr_val = calculate_atr_ohlc(ohlc, 14) if ohlc is not None and len(ohlc) >= 2 else calculate_atr(prices, 14)
     macd_data = calculate_macd(prices)
     bb_data = calculate_bollinger_bands(prices)
 
-    # แนวรับแนวต้าน — ใช้ช่วง 22 แท่งล่าสุด
     recent_prices = prices[-22:]
     support = float(min(recent_prices))
     resistance = float(max(recent_prices))
 
-    # EMA Trend
     if fast[-1] > slow[-1] * 1.001:
         trend = "Bullish"
     elif fast[-1] < slow[-1] * 0.999:
         trend = "Bearish"
     else:
         trend = "Sideways"
+
+    volume_info = {"current": 0.0, "avg_20": 0.0, "ratio": 1.0}
+    if ohlc is not None and "volume" in ohlc.columns:
+        vol = pd.Series(ohlc["volume"], dtype="float64").fillna(0)
+        if len(vol) > 0:
+            avg_vol = float(vol.tail(20).mean()) if len(vol) >= 2 else float(vol.iloc[-1])
+            cur_vol = float(vol.iloc[-1])
+            volume_info = {
+                "current": round(cur_vol, 2),
+                "avg_20": round(avg_vol, 2),
+                "ratio": round(cur_vol / avg_vol, 2) if avg_vol > 0 else 1.0
+            }
 
     return {
         "latest": latest,
@@ -169,107 +292,277 @@ def get_market_indicators(prices: List[float], symbol: str) -> Dict[str, Any]:
         "trend": trend,
         "support": support,
         "resistance": resistance,
-        "ema_fast": round(fast[-1], SYMBOLS[symbol]["decimals"]),
-        "ema_slow": round(slow[-1], SYMBOLS[symbol]["decimals"]),
+        "ema_fast": round(fast[-1], SYMBOLS.get(symbol, SYMBOLS["XAUUSD"])["decimals"]),
+        "ema_slow": round(slow[-1], SYMBOLS.get(symbol, SYMBOLS["XAUUSD"])["decimals"]),
         "macd": macd_data,
-        "bollinger": bb_data
+        "bollinger": bb_data,
+        "volume": volume_info,
+        "atr_source": "ohlc" if ohlc is not None and len(ohlc) >= 2 else "close_proxy"
     }
 
 # ─────────────────────────────────────────────────────────
-# Strategy Rule Engine (ไม่มี Random Fallback)
+# Strategy Rule Engine — Trend & Reversal แยกกัน
 # ─────────────────────────────────────────────────────────
 
-def evaluate_strategy_rules(indicators: Dict[str, Any], symbol: str, macro_trend_1h: Optional[str] = None) -> Dict[str, Any]:
-    """
-    ประเมินสัญญาณเทรดจากกฎทางเทคนิค
-    - ไม่มี random fallback อีกต่อไป
-    - คืนค่า WAIT เมื่อไม่มีสัญญาณชัดเจน
-    - เพิ่มการตรวจสอบ MACD confirmation
-    """
+def _indicator_context(indicators: Dict[str, Any]) -> Dict[str, Any]:
     latest = indicators["latest"]
     support = indicators["support"]
     resistance = indicators["resistance"]
     atr = indicators["atr"]
     trend = indicators["trend"]
     rsi_val = indicators["rsi"]
-    macd = indicators.get("macd", {"histogram": 0})
+    macd = indicators.get("macd", {"histogram": 0, "prev_histogram": 0})
     bb = indicators.get("bollinger", {"lower": support, "upper": resistance})
+    vol = indicators.get("volume", {"ratio": 1.0})
 
-    near_support = latest <= (support + atr * 1.5)
-    near_resistance = latest >= (resistance - atr * 1.5)
-    near_bb_lower = latest <= bb["lower"] * 1.002
-    near_bb_upper = latest >= bb["upper"] * 0.998
-    macd_bullish = macd["histogram"] > 0
-    macd_bearish = macd["histogram"] < 0
-
-    action = "WAIT"
-    reason = "ยังไม่พบสัญญาณที่สอดคล้องกัน รอสัญญาณยืนยันจากหลายอินดิเคเตอร์"
-    confidence = 0.0
-
-    # ─── BUY Conditions ───
-    buy_score = 0
-    if trend == "Bullish": buy_score += 1
-    if rsi_val < 65: buy_score += 1
-    if near_support or near_bb_lower: buy_score += 1
-    if macd_bullish: buy_score += 1
-
-    # ─── SELL Conditions ───
-    sell_score = 0
-    if trend == "Bearish": sell_score += 1
-    if rsi_val > 35: sell_score += 1
-    if near_resistance or near_bb_upper: sell_score += 1
-    if macd_bearish: sell_score += 1
-
-    # ─── Strong BUY: ≥3 ตัวชี้วัดสอดคล้อง ───
-    if buy_score >= 3 and rsi_val < 70 and sell_score < 2:
-        action = "BUY"
-        confidence = buy_score / 4.0
-        reason = (
-            f"สัญญาณ BUY ยืนยัน {buy_score}/4 ตัวชี้วัด — "
-            f"เทรนด์ {trend}, RSI {rsi_val}, "
-            f"{'ใกล้แนวรับ' if near_support else 'ใกล้ Bollinger Lower'}, "
-            f"MACD {'Bullish' if macd_bullish else 'Neutral'}"
-        )
-
-    # ─── Strong SELL: ≥3 ตัวชี้วัดสอดคล้อง ───
-    elif sell_score >= 3 and rsi_val > 30 and buy_score < 2:
-        action = "SELL"
-        confidence = sell_score / 4.0
-        reason = (
-            f"สัญญาณ SELL ยืนยัน {sell_score}/4 ตัวชี้วัด — "
-            f"เทรนด์ {trend}, RSI {rsi_val}, "
-            f"{'ใกล้แนวต้าน' if near_resistance else 'ใกล้ Bollinger Upper'}, "
-            f"MACD {'Bearish' if macd_bearish else 'Neutral'}"
-        )
-
-    # ─── Overbought/Oversold override ───
-    elif rsi_val > 78 and near_resistance:
-        action = "SELL"
-        confidence = 0.70
-        reason = f"RSI Overbought ({rsi_val}) และราคาใกล้แนวต้าน {resistance:.2f} — สัญญาณ SELL แบบ Reversal"
-
-    elif rsi_val < 22 and near_support:
-        action = "BUY"
-        confidence = 0.70
-        reason = f"RSI Oversold ({rsi_val}) และราคาใกล้แนวรับ {support:.2f} — สัญญาณ BUY แบบ Reversal"
-
-    # ─── Multi-Timeframe Trend Filter ───
-    if macro_trend_1h:
-        if macro_trend_1h == "Bullish" and action == "SELL":
-            action = "WAIT"
-            reason = f"แนวโน้มหลัก 1 ชั่วโมงเป็นขาขึ้น (Bullish) แต่สัญญาณระยะสั้นเป็น SELL — ปฏิเสธตามกฎเทรดตามแนวโน้ม"
-            confidence = 0.0
-        elif macro_trend_1h == "Bearish" and action == "BUY":
-            action = "WAIT"
-            reason = f"แนวโน้มหลัก 1 ชั่วโมงเป็นขาลง (Bearish) แต่สัญญาณระยะสั้นเป็น BUY — ปฏิเสธตามกฎเทรดตามแนวโน้ม"
-            confidence = 0.0
+    macd_histogram = macd["histogram"]
+    macd_prev_histogram = macd.get("prev_histogram", macd_histogram)
 
     return {
-        "action": action,
-        "reason": reason,
-        "confidence": round(confidence, 2),
-        "buy_score": buy_score,
-        "sell_score": sell_score
+        "latest": latest, "support": support, "resistance": resistance, "atr": atr,
+        "trend": trend, "rsi_val": rsi_val, "bb": bb, "vol_ratio": vol.get("ratio", 1.0),
+        "near_support": latest <= (support + atr * 1.5),
+        "near_resistance": latest >= (resistance - atr * 1.5),
+        "near_bb_lower": latest <= bb["lower"] * 1.002,
+        "near_bb_upper": latest >= bb["upper"] * 0.998,
+        "macd_bullish": macd_histogram > 0,
+        "macd_bearish": macd_histogram < 0,
+        "macd_weakening": macd_histogram < macd_prev_histogram,
+        "macd_strengthening": macd_histogram > macd_prev_histogram,
+        "macd_histogram": macd_histogram,
+        "macd_prev_histogram": macd_prev_histogram,
+    }
+
+def _wait_signal() -> Dict[str, Any]:
+    return {
+        "action": "WAIT", "reason": "ยังไม่พบสัญญาณที่สอดคล้องกัน",
+        "confidence": 0.0, "strategy_type": "WAIT",
+        "buy_score": 0, "sell_score": 0, "confirmations": []
+    }
+
+def evaluate_trend_following(indicators: Dict[str, Any], symbol: str, cfg: Optional[Dict] = None) -> Dict[str, Any]:
+    """กลยุทธ์เทรดตามเทรนด์ — คะแนนแยกจาก reversal"""
+    cfg = cfg or get_strategy_config(symbol)
+    ctx = _indicator_context(indicators)
+    min_score = cfg["trend_min_score"]
+
+    buy_score = sum([
+        ctx["trend"] == "Bullish",
+        ctx["rsi_val"] < cfg["trend_rsi_buy_max"],
+        ctx["near_support"] or ctx["near_bb_lower"],
+        ctx["macd_bullish"],
+    ])
+    sell_score = sum([
+        ctx["trend"] == "Bearish",
+        ctx["rsi_val"] > cfg["trend_rsi_sell_min"],
+        ctx["near_resistance"] or ctx["near_bb_upper"],
+        ctx["macd_bearish"],
+    ])
+
+    if buy_score >= min_score and ctx["rsi_val"] < 70 and sell_score < 2:
+        return {
+            "action": "BUY", "strategy_type": "TREND_FOLLOWING",
+            "confidence": round(buy_score / 4.0, 2),
+            "buy_score": buy_score, "sell_score": sell_score,
+            "confirmations": ["trend", "rsi", "location", "macd"][:buy_score],
+            "reason": (
+                f"[Trend] BUY {buy_score}/4 — เทรนด์ {ctx['trend']}, RSI {ctx['rsi_val']}, "
+                f"{'แนวรับ/BB Lower' if ctx['near_support'] or ctx['near_bb_lower'] else 'location'}, "
+                f"MACD {'Bullish' if ctx['macd_bullish'] else 'Neutral'}"
+            )
+        }
+
+    if sell_score >= min_score and ctx["rsi_val"] > 30 and buy_score < 2:
+        return {
+            "action": "SELL", "strategy_type": "TREND_FOLLOWING",
+            "confidence": round(sell_score / 4.0, 2),
+            "buy_score": buy_score, "sell_score": sell_score,
+            "confirmations": ["trend", "rsi", "location", "macd"][:sell_score],
+            "reason": (
+                f"[Trend] SELL {sell_score}/4 — เทรนด์ {ctx['trend']}, RSI {ctx['rsi_val']}, "
+                f"{'แนวต้าน/BB Upper' if ctx['near_resistance'] or ctx['near_bb_upper'] else 'location'}, "
+                f"MACD {'Bearish' if ctx['macd_bearish'] else 'Neutral'}"
+            )
+        }
+
+    result = _wait_signal()
+    result["buy_score"] = buy_score
+    result["sell_score"] = sell_score
+    return result
+
+def evaluate_reversal(indicators: Dict[str, Any], symbol: str, cfg: Optional[Dict] = None) -> Dict[str, Any]:
+    """กลยุทธ์ reversal — RSI extreme + location + MACD + volume confirmation"""
+    cfg = cfg or get_strategy_config(symbol)
+    ctx = _indicator_context(indicators)
+    vol_ok = ctx["vol_ratio"] >= cfg["volume_confirm_min"]
+
+    # Early SELL: RSI > threshold + BB Upper + MACD weakening (+ volume)
+    if (ctx["rsi_val"] > cfg["rsi_sell_early"]
+            and ctx["near_bb_upper"]
+            and ctx["macd_weakening"]):
+        confs = ["rsi_overbought", "bb_upper", "macd_weakening"]
+        confidence = 0.68
+        if vol_ok:
+            confs.append("volume")
+            confidence = 0.74
+        return {
+            "action": "SELL", "strategy_type": "EARLY_REVERSAL",
+            "confidence": confidence, "buy_score": 0, "sell_score": len(confs),
+            "confirmations": confs,
+            "reason": (
+                f"[Reversal] Early SELL — RSI {ctx['rsi_val']} > {cfg['rsi_sell_early']}, "
+                f"Bollinger Upper, MACD อ่อนลง ({ctx['macd_prev_histogram']:.4f}→{ctx['macd_histogram']:.4f})"
+                f"{', Volume ยืนยัน' if vol_ok else ''}"
+            )
+        }
+
+    # Full SELL reversal
+    if ctx["rsi_val"] > cfg["rsi_sell_full"] and ctx["near_resistance"]:
+        confs = ["rsi_extreme", "resistance"]
+        confidence = 0.70
+        if vol_ok:
+            confs.append("volume")
+            confidence = 0.76
+        return {
+            "action": "SELL", "strategy_type": "REVERSAL",
+            "confidence": confidence, "buy_score": 0, "sell_score": len(confs),
+            "confirmations": confs,
+            "reason": (
+                f"[Reversal] SELL — RSI {ctx['rsi_val']} > {cfg['rsi_sell_full']}, "
+                f"ใกล้แนวต้าน {ctx['resistance']:.2f}"
+                f"{', Volume ยืนยัน' if vol_ok else ''}"
+            )
+        }
+
+    # Early BUY reversal
+    if (ctx["rsi_val"] < cfg["rsi_buy_early"]
+            and ctx["near_bb_lower"]
+            and ctx["macd_strengthening"]):
+        confs = ["rsi_oversold", "bb_lower", "macd_strengthening"]
+        confidence = 0.68
+        if vol_ok:
+            confs.append("volume")
+            confidence = 0.74
+        return {
+            "action": "BUY", "strategy_type": "EARLY_REVERSAL",
+            "confidence": confidence, "buy_score": len(confs), "sell_score": 0,
+            "confirmations": confs,
+            "reason": (
+                f"[Reversal] Early BUY — RSI {ctx['rsi_val']} < {cfg['rsi_buy_early']}, "
+                f"Bollinger Lower, MACD แข็งขึ้น ({ctx['macd_prev_histogram']:.4f}→{ctx['macd_histogram']:.4f})"
+                f"{', Volume ยืนยัน' if vol_ok else ''}"
+            )
+        }
+
+    # Full BUY reversal
+    if ctx["rsi_val"] < cfg["rsi_buy_full"] and ctx["near_support"]:
+        confs = ["rsi_extreme", "support"]
+        confidence = 0.70
+        if vol_ok:
+            confs.append("volume")
+            confidence = 0.76
+        return {
+            "action": "BUY", "strategy_type": "REVERSAL",
+            "confidence": confidence, "buy_score": len(confs), "sell_score": 0,
+            "confirmations": confs,
+            "reason": (
+                f"[Reversal] BUY — RSI {ctx['rsi_val']} < {cfg['rsi_buy_full']}, "
+                f"ใกล้แนวรับ {ctx['support']:.2f}"
+                f"{', Volume ยืนยัน' if vol_ok else ''}"
+            )
+        }
+
+    return _wait_signal()
+
+def apply_mtf_filter(
+    signal: Dict[str, Any],
+    macro_trend_1h: Optional[str],
+) -> Dict[str, Any]:
+    """MTF filter — block เฉพาะ trend-following สวนเทรนด์, ปล่อย reversal ผ่าน"""
+    if not macro_trend_1h or signal["action"] == "WAIT":
+        return signal
+
+    stype = signal.get("strategy_type", "WAIT")
+    if stype in ("REVERSAL", "EARLY_REVERSAL"):
+        return signal
+
+    if macro_trend_1h == "Bullish" and signal["action"] == "SELL":
+        return {
+            **signal,
+            "action": "WAIT",
+            "confidence": 0.0,
+            "reason": f"[MTF Block] Trend SELL สวน 1h Bullish — {signal['reason']}",
+            "mtf_blocked": True,
+        }
+    if macro_trend_1h == "Bearish" and signal["action"] == "BUY":
+        return {
+            **signal,
+            "action": "WAIT",
+            "confidence": 0.0,
+            "reason": f"[MTF Block] Trend BUY สวน 1h Bearish — {signal['reason']}",
+            "mtf_blocked": True,
+        }
+    return signal
+
+def evaluate_strategy_rules(
+    indicators: Dict[str, Any],
+    symbol: str,
+    macro_trend_1h: Optional[str] = None,
+    strategy_filter: Optional[str] = None,
+    cfg: Optional[Dict] = None,
+) -> Dict[str, Any]:
+    """
+    ประเมินสัญญาณ — แยก trend / reversal แล้วเลือกตัวที่เหมาะสม
+    strategy_filter: None | 'TREND_FOLLOWING' | 'REVERSAL' (for backtest)
+    """
+    cfg = cfg or get_strategy_config(symbol)
+    trend_sig = evaluate_trend_following(indicators, symbol, cfg)
+    reversal_sig = evaluate_reversal(indicators, symbol, cfg)
+
+    if strategy_filter == "TREND_FOLLOWING":
+        primary = trend_sig
+    elif strategy_filter == "REVERSAL":
+        primary = reversal_sig if reversal_sig["action"] != "WAIT" else _wait_signal()
+    else:
+        # Reversal มี priority เมื่อ RSI extreme + confirmation ครบ
+        if reversal_sig["action"] != "WAIT" and len(reversal_sig.get("confirmations", [])) >= 3:
+            primary = reversal_sig
+        elif trend_sig["action"] != "WAIT":
+            primary = trend_sig
+        elif reversal_sig["action"] != "WAIT":
+            primary = reversal_sig
+        else:
+            primary = _wait_signal()
+
+    primary = apply_mtf_filter(primary, macro_trend_1h)
+
+    stat_score = len(primary.get("confirmations", []))
+    if primary["action"] != "WAIT":
+        stat_score = min(stat_score / 4.0, 1.0)
+
+    return {
+        "action": primary["action"],
+        "reason": primary["reason"],
+        "confidence": primary["confidence"],
+        "strategy_type": primary.get("strategy_type", "WAIT"),
+        "buy_score": primary.get("buy_score", 0),
+        "sell_score": primary.get("sell_score", 0),
+        "confirmations": primary.get("confirmations", []),
+        "statistical_score": round(stat_score, 2),
+        "trend_signal": {
+            "action": trend_sig["action"],
+            "confidence": trend_sig["confidence"],
+            "strategy_type": trend_sig.get("strategy_type", "WAIT"),
+            "buy_score": trend_sig.get("buy_score", 0),
+            "sell_score": trend_sig.get("sell_score", 0),
+        },
+        "reversal_signal": {
+            "action": reversal_sig["action"],
+            "confidence": reversal_sig["confidence"],
+            "strategy_type": reversal_sig.get("strategy_type", "WAIT"),
+            "confirmations": reversal_sig.get("confirmations", []),
+        },
+        "mtf_blocked": primary.get("mtf_blocked", False),
     }
 
 # ─────────────────────────────────────────────────────────
@@ -284,24 +577,34 @@ def calculate_position_size(
     atr_multiplier: float = 2.0
 ) -> Dict[str, Any]:
     """
-    คำนวณขนาด Lot จาก ATR-based Stop Loss + Fixed Fractional Risk
-    Formula: Lot = (Equity × Risk%) / (ATR × Multiplier × TickValue × 100)
+    คำนวณ Lot จาก ATR stop + fixed fractional risk
+    XAUUSD: lot × stop_distance × contractSize(100) = risk $
+    Crypto: lot (coin qty) × stop_distance = risk $
     """
     spec = SYMBOLS.get(symbol, SYMBOLS["XAUUSD"])
+    contract_size = spec.get("contractSize", 100)
+    asset_class = spec.get("assetClass", "metal")
+
     stop_distance = atr * atr_multiplier
-    stop_distance = max(stop_distance, spec["volatility"] * 0.5)  # floor
+    stop_distance = max(stop_distance, spec["volatility"] * 0.5)
 
     risk_dollars = equity * (risk_pct / 100)
-    tick_val = spec["tickValue"]
+    risk_per_lot = stop_distance * contract_size
+    if risk_per_lot <= 0:
+        risk_per_lot = stop_distance * 100
 
-    # Lot calculation
-    lot_raw = risk_dollars / (stop_distance * tick_val * 100)
-    lot = round(max(0.01, min(lot_raw, 10.0)), 2)
+    lot_raw = risk_dollars / risk_per_lot
+    max_lot = 10.0 if asset_class in ("metal", "forex") else 5.0
+    lot = round(max(0.01, min(lot_raw, max_lot)), 2)
+
+    actual_risk = lot * risk_per_lot
 
     return {
         "lot": lot,
         "stop_distance": round(stop_distance, spec["decimals"]),
-        "risk_dollars": round(risk_dollars, 2)
+        "risk_dollars": round(risk_dollars, 2),
+        "actual_risk_dollars": round(actual_risk, 2),
+        "contract_size": contract_size,
     }
 
 # ─────────────────────────────────────────────────────────
@@ -320,10 +623,11 @@ def check_trade_risk(
     """ตรวจสอบกฎเหล็กบริหารความเสี่ยง 6 ประการ"""
     spec = SYMBOLS.get(symbol, SYMBOLS["XAUUSD"])
 
-    risk_dollars = lot * stop_distance * spec["tickValue"] * 100
+    contract_size = spec.get("contractSize", 100)
+    risk_dollars = lot * stop_distance * contract_size
     risk_pct = (risk_dollars / RISK_CONFIG["equity"]) * 100
 
-    exposure_dollars = lot * price * 100
+    exposure_dollars = lot * price * contract_size
     exposure_pct = (exposure_dollars / RISK_CONFIG["equity"]) * 100
 
     checks = [
@@ -381,9 +685,9 @@ def calculate_performance_metrics(trades: List[Dict]) -> Dict[str, Any]:
     profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else (float('inf') if gross_profit > 0 else 0.0)
     profit_factor = min(profit_factor, 99.9)  # cap
 
-    # Max Drawdown
-    equity = 0.0
-    peak = 0.0
+    # Max Drawdown (จาก equity เริ่มต้น)
+    equity = float(RISK_CONFIG["equity"])
+    peak = equity
     max_dd = 0.0
     for pnl in pnls:
         equity += pnl

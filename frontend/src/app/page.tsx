@@ -1790,93 +1790,115 @@ export default function Dashboard() {
               className="block w-full h-full cursor-pointer"
             />
             
-            {/* ── Bottom Center: Risk Gate Control Bar ── */}
-            <div className="absolute bottom-3 left-1/2 -translate-x-1/2 w-[700px] max-w-[96vw] bg-[#070a0f]/96 border border-[#1e2d45] rounded-xl p-2.5 shadow-2xl backdrop-blur-md flex items-center gap-3">
-              {/* Symbol selector + price row */}
-              <div className="flex flex-col gap-1 min-w-[90px]">
-                <div className="text-[8.5px] text-[#f59e0b] font-bold uppercase tracking-wider">📡 Risk Gate</div>
-                <select 
-                  value={symbol}
-                  onChange={(e) => handleSymbolChange(e.target.value)}
-                  className="bg-[#111520] border border-[#1e2d45] rounded text-[9px] text-white p-0.5 outline-none font-mono font-bold w-full"
-                >
-                  {SYMBOLS_LIST.map((s) => (
-                    <option key={s.symbol} value={s.symbol}>
-                      {s.symbol}
-                    </option>
-                  ))}
-                </select>
-              </div>
+            {/* ── Bottom Center: Risk Gate Control Bar (2-row layout) ── */}
+            <div className="absolute bottom-3 left-1/2 -translate-x-1/2 w-[820px] max-w-[98vw] bg-[#070a0f]/96 border border-[#1e2d45] rounded-xl px-3 py-2 shadow-2xl backdrop-blur-md flex flex-col gap-1.5">
 
-              {/* Indicators row */}
-              <div className="flex gap-2 text-center text-[9px] bg-[#0a0d16] border border-[#1e2d45] p-1.5 rounded font-mono flex-1">
-                <div className="flex-1">
-                  <div className="text-[#3d5a7a] text-[8px]">ราคา</div>
-                  <div className="font-bold text-white">{latestPrice || "-"}</div>
+              {/* แถวบน: Label + Indicators + Auto Scan */}
+              <div className="flex items-center gap-2">
+                {/* Symbol selector */}
+                <div className="flex flex-col gap-0.5 min-w-[80px]">
+                  <div className="text-[8px] text-[#f59e0b] font-bold uppercase tracking-wider">📡 Risk Gate</div>
+                  <select
+                    value={symbol}
+                    onChange={(e) => handleSymbolChange(e.target.value)}
+                    className="bg-[#111520] border border-[#1e2d45] rounded text-[9px] text-white p-0.5 outline-none font-mono font-bold w-full"
+                  >
+                    {SYMBOLS_LIST.map((s) => (
+                      <option key={s.symbol} value={s.symbol}>{s.symbol}</option>
+                    ))}
+                  </select>
                 </div>
-                <div className="flex-1">
-                  <div className="text-[#3d5a7a] text-[8px]">EMA</div>
-                  <div className={`font-bold ${indicators?.trend === "Bullish" ? "text-[#10b981]" : "text-[#f87171]"}`}>{indicators?.trend || "-"}</div>
-                </div>
-                <div className="flex-1">
-                  <div className="text-[#3d5a7a] text-[8px]">RSI</div>
-                  <div className="font-bold text-white">{indicators?.rsi || "-"}</div>
-                </div>
-                <div className="flex-1">
-                  <div className="text-[#3d5a7a] text-[8px]">Signal</div>
-                  <div className={`font-bold ${signal?.action === "BUY" ? "text-[#10b981]" : signal?.action === "SELL" ? "text-[#f87171]" : "text-slate-400"}`}>{signal?.action || "WAIT"}</div>
-                </div>
-              </div>
 
-              {/* Lot / SL / Spread */}
-              <div className="flex gap-1.5 text-[8.5px]">
-                <div>
-                  <span className="text-[#3d5a7a] block">Lot</span>
-                  <input type="number" step="0.01" value={riskForm.lot} 
-                    onChange={(e) => setRiskForm({...riskForm, lot: Number(e.target.value)})}
-                    className="w-14 bg-[#111520] border border-[#1e2d45] rounded p-0.5 text-white font-mono text-center"
-                  />
+                {/* Indicators */}
+                <div className="flex gap-2 text-center text-[9px] bg-[#0a0d16] border border-[#1e2d45] px-2 py-1 rounded font-mono flex-1">
+                  <div className="flex-1">
+                    <div className="text-[#3d5a7a] text-[7.5px]">ราคา</div>
+                    <div className="font-bold text-white">{latestPrice || "-"}</div>
+                  </div>
+                  <div className="flex-1">
+                    <div className="text-[#3d5a7a] text-[7.5px]">EMA</div>
+                    <div className={`font-bold ${indicators?.trend === "Bullish" ? "text-[#10b981]" : "text-[#f87171]"}`}>{indicators?.trend || "-"}</div>
+                  </div>
+                  <div className="flex-1">
+                    <div className="text-[#3d5a7a] text-[7.5px]">RSI</div>
+                    <div className="font-bold text-white">{indicators?.rsi || "-"}</div>
+                  </div>
+                  <div className="flex-1">
+                    <div className="text-[#3d5a7a] text-[7.5px]">Signal</div>
+                    <div className={`font-bold ${signal?.action === "BUY" ? "text-[#10b981]" : signal?.action === "SELL" ? "text-[#f87171]" : "text-slate-400"}`}>{signal?.action || "WAIT"}</div>
+                  </div>
                 </div>
-                <div>
-                  <span className="text-[#3d5a7a] block">SL (Pips)</span>
-                  <input type="number" value={riskForm.stopDistance} 
-                    onChange={(e) => setRiskForm({...riskForm, stopDistance: Number(e.target.value)})}
-                    className="w-14 bg-[#111520] border border-[#1e2d45] rounded p-0.5 text-white font-mono text-center"
-                  />
-                </div>
-                <div>
-                  <span className="text-[#3d5a7a] block">Spread</span>
-                  <input type="number" step="0.1" value={riskForm.spread} 
-                    onChange={(e) => setRiskForm({...riskForm, spread: Number(e.target.value)})}
-                    className="w-14 bg-[#111520] border border-[#1e2d45] rounded p-0.5 text-white font-mono text-center"
-                  />
-                </div>
-              </div>
 
-              {/* Action buttons */}
-              <div className="flex gap-1.5">
-                <button onClick={handleRiskTest} className="px-2.5 py-1.5 bg-[#1e2d45] hover:bg-[#243352] text-[9px] font-bold text-[#c8d8f0] rounded border border-[#243352] transition whitespace-nowrap">
-                  🔍 ประเมิน
-                </button>
-                <div className={`px-2 py-1.5 text-[9px] font-bold rounded flex items-center ${
-                  risk?.passed ? "bg-[#0d2a14] text-[#10b981] border border-[#1a5a28]" : "bg-[#2a0d0d] text-[#f87171] border border-[#6b1c1c]"
-                }`}>
-                  {risk?.passed ? "🟢 PASS" : "🔴 BLOCK"}
-                </div>
-                <button 
-                  onClick={handleApprove}
-                  disabled={!risk?.passed}
-                  className="px-2.5 py-1.5 bg-[#16a34a] hover:bg-[#15803d] disabled:bg-[#111520] disabled:text-[#3d5a7a] border border-[#15803d] disabled:border-[#1e2d45] text-white text-[9px] font-bold rounded transition whitespace-nowrap"
+                {/* 🤖 Auto Scan — วางแยกชัดเจนขวาสุดแถวบน */}
+                <button
+                  onClick={handleToggleMode}
+                  className={`px-3 py-1.5 text-[9px] font-bold rounded border transition whitespace-nowrap flex items-center gap-1 ${
+                    mode === "auto"
+                      ? "bg-[#0d2a3a] text-[#22d3ee] border-[#1a5a7a] shadow-[0_0_10px_#22d3ee55]"
+                      : "bg-[#111827] text-[#7a9bbf] border-[#1e2d45] hover:bg-[#1e2d45] hover:text-[#c8d8f0]"
+                  }`}
                 >
-                  ✅ อนุมัติ
-                </button>
-                <button 
-                  onClick={handleReject}
-                  className="px-2 py-1.5 bg-[#2a0d0d] hover:bg-[#5a1a1a] border border-[#5a1a1a] text-[#f87171] text-[9px] rounded transition"
-                >
-                  ❌
+                  <span className={`w-1.5 h-1.5 rounded-full ${mode === "auto" ? "bg-[#22d3ee] shadow-[0_0_5px_#22d3ee]" : "bg-[#3d5a7a]"}`} />
+                  {mode === "auto" ? "AUTO ON" : "Auto Scan"}
                 </button>
               </div>
+
+              {/* แถวล่าง: Lot / SL / Spread + ปุ่ม Action */}
+              <div className="flex items-center gap-2">
+                {/* Lot / SL / Spread */}
+                <div className="flex gap-1.5 text-[8.5px]">
+                  <div>
+                    <span className="text-[#3d5a7a] block text-[7.5px]">Lot</span>
+                    <input type="number" step="0.01" value={riskForm.lot}
+                      onChange={(e) => setRiskForm({...riskForm, lot: Number(e.target.value)})}
+                      className="w-14 bg-[#111520] border border-[#1e2d45] rounded p-0.5 text-white font-mono text-center text-[9px]"
+                    />
+                  </div>
+                  <div>
+                    <span className="text-[#3d5a7a] block text-[7.5px]">SL (Pips)</span>
+                    <input type="number" value={riskForm.stopDistance}
+                      onChange={(e) => setRiskForm({...riskForm, stopDistance: Number(e.target.value)})}
+                      className="w-14 bg-[#111520] border border-[#1e2d45] rounded p-0.5 text-white font-mono text-center text-[9px]"
+                    />
+                  </div>
+                  <div>
+                    <span className="text-[#3d5a7a] block text-[7.5px]">Spread</span>
+                    <input type="number" step="0.1" value={riskForm.spread}
+                      onChange={(e) => setRiskForm({...riskForm, spread: Number(e.target.value)})}
+                      className="w-14 bg-[#111520] border border-[#1e2d45] rounded p-0.5 text-white font-mono text-center text-[9px]"
+                    />
+                  </div>
+                </div>
+
+                {/* divider */}
+                <div className="w-px h-7 bg-[#1e2d45]" />
+
+                {/* Action buttons */}
+                <div className="flex items-center gap-1.5 flex-1">
+                  <button onClick={handleRiskTest} className="px-2.5 py-1.5 bg-[#1e2d45] hover:bg-[#243352] text-[9px] font-bold text-[#c8d8f0] rounded border border-[#243352] transition whitespace-nowrap">
+                    🔍 ประเมิน
+                  </button>
+                  <div className={`px-2.5 py-1.5 text-[9px] font-bold rounded flex items-center border ${
+                    risk?.passed ? "bg-[#0d2a14] text-[#10b981] border-[#1a5a28]" : "bg-[#2a0d0d] text-[#f87171] border-[#6b1c1c]"
+                  }`}>
+                    {risk?.passed ? "🟢 PASS" : "🔴 BLOCK"}
+                  </div>
+                  <button
+                    onClick={handleApprove}
+                    disabled={!risk?.passed}
+                    className="px-2.5 py-1.5 bg-[#16a34a] hover:bg-[#15803d] disabled:bg-[#111520] disabled:text-[#3d5a7a] border border-[#15803d] disabled:border-[#1e2d45] text-white text-[9px] font-bold rounded transition whitespace-nowrap"
+                  >
+                    ✅ อนุมัติ
+                  </button>
+                  <button
+                    onClick={handleReject}
+                    className="px-2 py-1.5 bg-[#2a0d0d] hover:bg-[#5a1a1a] border border-[#5a1a1a] text-[#f87171] text-[9px] rounded transition"
+                  >
+                    ❌
+                  </button>
+                </div>
+              </div>
+
             </div>
 
             {/* ── Top-Right: ERP Mini Widget ── */}

@@ -40,6 +40,7 @@ from backend.core import (
     calculate_position_size,
     calculate_performance_metrics,
     append_price,
+    YAHOO_SYMBOL_MAP,
     RISK_CONFIG,
     SYMBOLS
 )
@@ -162,7 +163,8 @@ class TradingState:
         self.signal_executed = False  # Track if the current signal was already executed
         self.daily_realized_pnl = 0.0
         self.circuit_breaker_triggered = False
-        self.macro_trend_1h = "Bullish"
+        self.macro_trend_1h = None
+        self.ohlc_candles: Optional[pd.DataFrame] = None
         self.partially_closed_trades = set()
         self._state_lock = asyncio.Lock()
 
@@ -338,11 +340,78 @@ async def fetch_live_stock_price(symbol: str) -> Optional[float]:
             logger.error(f"Yahoo Finance error for {symbol}: {e}")
     return None
 
+async def fetch_yahoo_price(yf_symbol: str) -> Optional[float]:
+    try:
+        r = await get_http_client().get(
+            f"https://query1.finance.yahoo.com/v8/finance/chart/{yf_symbol}?interval=1m&range=1d",
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=3.0
+        )
+        if r.status_code == 200:
+            meta = r.json().get("chart", {}).get("result", [{}])[0].get("meta", {})
+            p = float(meta.get("regularMarketPrice", 0))
+            return p if p > 0 else None
+    except Exception as e:
+        logger.error(f"Yahoo price error for {yf_symbol}: {e}")
+    return None
+
+async def fetch_ohlc_candles(symbol: str, interval: str = "15m", range_val: str = "5d") -> Optional[pd.DataFrame]:
+    """ดึง OHLC จริงสำหรับคำนวณ ATR / volume"""
+    yf_symbol = YAHOO_SYMBOL_MAP.get(symbol, symbol)
+    try:
+        r = await get_http_client().get(
+            f"https://query1.finance.yahoo.com/v8/finance/chart/{yf_symbol}?interval={interval}&range={range_val}",
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=5.0
+        )
+        if r.status_code != 200:
+            return None
+        result = r.json().get("chart", {}).get("result", [{}])[0]
+        quote = result.get("indicators", {}).get("quote", [{}])[0]
+        df = pd.DataFrame({
+            "open": quote.get("open", []),
+            "high": quote.get("high", []),
+            "low": quote.get("low", []),
+            "close": quote.get("close", []),
+            "volume": quote.get("volume", []),
+        })
+        df = df.dropna()
+        return df if len(df) >= 20 else None
+    except Exception as e:
+        logger.error(f"OHLC fetch error for {symbol}: {e}")
+    return None
+
 async def fetch_actual_market_price(symbol: str) -> Optional[float]:
     price = await fetch_live_binance_price(symbol)
     if price:
         return price
+    if symbol == "XAUUSD":
+        return await fetch_yahoo_price("GC=F")
+    if symbol == "EURUSD":
+        return await fetch_yahoo_price("EURUSD=X")
     return await fetch_live_stock_price(symbol)
+
+def _compute_indicators(symbol: str, ohlc_df: Optional[pd.DataFrame], prices: List[float]) -> Dict[str, Any]:
+    if ohlc_df is not None and len(ohlc_df) >= 20:
+        return get_market_indicators(ohlc_df, symbol)
+    return get_market_indicators(prices, symbol)
+
+def _update_risk_from_signal(symbol: str, signal: Dict, indicators: Dict) -> Dict[str, Any]:
+    pos_size = calculate_position_size(
+        symbol,
+        state.get_total_equity(),
+        RISK_CONFIG["maxRiskPerTradePct"],
+        indicators["atr"]
+    )
+    lot = pos_size["lot"]
+    stop_dist = pos_size["stop_distance"]
+    risk = check_trade_risk(
+        symbol, signal["action"], indicators["latest"],
+        lot, stop_dist, 1.8, state.circuit_breaker_triggered
+    )
+    risk["calculatedLot"] = lot
+    risk["calculatedStopDist"] = stop_dist
+    return risk
 
 async def sync_live_binance_balance():
     if state.binance_client:
@@ -425,48 +494,22 @@ async def trigger_market_update(symbol: str = None):
     prev_price = state.indicators.get("latest") if isinstance(state.indicators, dict) else None
     live_price = await fetch_actual_market_price(state.symbol)
 
-    # Fetch 1h trend for Multi-Timeframe Confirmation
     trend_1h = await fetch_historical_candles_1h(state.symbol)
-    if trend_1h:
-        async with state._state_lock:
-            state.macro_trend_1h = trend_1h
+    ohlc_df = await fetch_ohlc_candles(state.symbol)
 
     async with state._state_lock:
+        if trend_1h:
+            state.macro_trend_1h = trend_1h
+        if ohlc_df is not None:
+            state.ohlc_candles = ohlc_df
         if live_price:
             append_price(state.symbol, live_price)
 
         state.prices = generate_price_history(state.symbol)
-
-        state.indicators = get_market_indicators(state.prices, state.symbol)
+        state.indicators = _compute_indicators(state.symbol, state.ohlc_candles, state.prices)
         state.signal = evaluate_strategy_rules(state.indicators, state.symbol, state.macro_trend_1h)
         state.signal_executed = False
-
-        # Dynamic lot size จาก ATR จริง
-        pos_size = calculate_position_size(
-            state.symbol,
-            state.get_total_equity(),
-            RISK_CONFIG["maxRiskPerTradePct"],
-            state.indicators["atr"]
-        )
-        lot = pos_size["lot"]
-        stop_dist = pos_size["stop_distance"]
-
-        # Override stop distance for BTCUSDT to match user settings
-        if state.symbol == "BTCUSDT":
-            stop_dist = 300.0
-
-        state.risk = check_trade_risk(
-            state.symbol,
-            state.signal["action"],
-            state.indicators["latest"],
-            lot,
-            stop_dist,
-            1.8,  # spread estimate
-            state.circuit_breaker_triggered
-        )
-        # เก็บ lot size ที่คำนวณ
-        state.risk["calculatedLot"] = lot
-        state.risk["calculatedStopDist"] = stop_dist
+        state.risk = _update_risk_from_signal(state.symbol, state.signal, state.indicators)
 
     add_journal_entry("market_snapshot", f"ดึงข้อมูลราคา {state.symbol}: {state.indicators['latest']} (1h Trend: {state.macro_trend_1h})")
 
@@ -1105,35 +1148,13 @@ async def realtime_price_listener():
             async with state._state_lock:
                 append_price(active_symbol, new_price)
                 state.prices = generate_price_history(active_symbol)
-                state.indicators = get_market_indicators(state.prices, active_symbol)
+                state.indicators = _compute_indicators(active_symbol, state.ohlc_candles, state.prices)
                 state.signal = evaluate_strategy_rules(state.indicators, active_symbol, state.macro_trend_1h)
-                
+
                 if state.signal["action"] == "HOLD":
                     state.signal_executed = False
 
-                pos_size = calculate_position_size(
-                    active_symbol,
-                    state.get_total_equity(),
-                    RISK_CONFIG["maxRiskPerTradePct"],
-                    state.indicators["atr"]
-                )
-                
-                lot = pos_size["lot"]
-                stop_dist = pos_size["stop_distance"]
-                if active_symbol == "BTCUSDT":
-                    stop_dist = 300.0
-                    
-                state.risk = check_trade_risk(
-                    active_symbol,
-                    state.signal["action"],
-                    state.indicators["latest"],
-                    lot,
-                    stop_dist,
-                    1.8,
-                    state.circuit_breaker_triggered
-                )
-                state.risk["calculatedLot"] = lot
-                state.risk["calculatedStopDist"] = stop_dist
+                state.risk = _update_risk_from_signal(active_symbol, state.signal, state.indicators)
 
             # Broadcast real-time update to UI
             await manager.broadcast({
@@ -1438,18 +1459,21 @@ async def lifespan(app: FastAPI):
 
     # Price ticker (15s interval)
     async def price_ticker_sim():
+        tick_count = 0
         while True:
             await asyncio.sleep(60)
+            tick_count += 1
             spec = SYMBOLS.get(state.symbol, SYMBOLS["XAUUSD"])
             live_price = await fetch_actual_market_price(state.symbol)
 
-            # Update 1h trend periodically
             trend_1h = await fetch_historical_candles_1h(state.symbol)
-            if trend_1h:
-                async with state._state_lock:
-                    state.macro_trend_1h = trend_1h
+            ohlc_df = await fetch_ohlc_candles(state.symbol) if tick_count % 5 == 0 else None
 
             async with state._state_lock:
+                if trend_1h:
+                    state.macro_trend_1h = trend_1h
+                if ohlc_df is not None:
+                    state.ohlc_candles = ohlc_df
                 if live_price:
                     new_price = live_price
                 else:
@@ -1458,38 +1482,15 @@ async def lifespan(app: FastAPI):
                     new_price = round(current + change, spec["decimals"])
                     new_price = max(new_price, spec["volatility"])
 
-                # Update continuous price store
                 append_price(state.symbol, new_price)
                 state.prices = generate_price_history(state.symbol)
-                state.indicators = get_market_indicators(state.prices, state.symbol)
+                state.indicators = _compute_indicators(state.symbol, state.ohlc_candles, state.prices)
                 state.signal = evaluate_strategy_rules(state.indicators, state.symbol, state.macro_trend_1h)
-                
+
                 if state.signal["action"] == "HOLD":
                     state.signal_executed = False
 
-                pos_size = calculate_position_size(
-                    state.symbol,
-                    state.get_total_equity(),
-                    RISK_CONFIG["maxRiskPerTradePct"],
-                    state.indicators["atr"]
-                )
-                
-                lot = pos_size["lot"]
-                stop_dist = pos_size["stop_distance"]
-                if state.symbol == "BTCUSDT":
-                    stop_dist = 300.0
-                    
-                state.risk = check_trade_risk(
-                    state.symbol,
-                    state.signal["action"],
-                    state.indicators["latest"],
-                    lot,
-                    stop_dist,
-                    1.8,
-                    state.circuit_breaker_triggered
-                )
-                state.risk["calculatedLot"] = lot
-                state.risk["calculatedStopDist"] = stop_dist
+                state.risk = _update_risk_from_signal(state.symbol, state.signal, state.indicators)
 
             await manager.broadcast({
                 "type": "price_tick",

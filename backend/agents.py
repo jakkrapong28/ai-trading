@@ -68,6 +68,9 @@ async def generate_claude_agent_opinion(
         macd = indicators.get("macd", {})
         action = signal.get("action", "WAIT")
         confidence = signal.get("confidence", 0)
+        strategy_type = signal.get("strategy_type", "WAIT")
+        stat_score = signal.get("statistical_score", 0)
+        confirmations = signal.get("confirmations", [])
         risk_passed = risk.get("passed", False)
         risk_pct = risk.get("riskPct", 0)
 
@@ -77,7 +80,9 @@ async def generate_claude_agent_opinion(
                 f"คุณคือ CEO Agent หัวหน้าทีม AI Trading Virtual Office "
                 f"ทำหน้าที่เปิดประชุมและมอบหมายงานวิเคราะห์ "
                 f"พูดภาษาไทยอย่างเป็นทางการ กระชับ มีอำนาจ ความยาว 2-3 ประโยค "
-                f"ข้อมูล: {symbol} ราคา {latest} สัญญาณ {action} (confidence {confidence:.0%})"
+                f"ข้อมูล: {symbol} ราคา {latest} สัญญาณ {action} "
+                f"({strategy_type}, confidence {confidence:.0%}, stat {stat_score:.0%}, "
+                f"confirmations: {', '.join(confirmations) or 'none'})"
             ),
             "Chart": (
                 f"คุณคือนักวิเคราะห์เทคนิคอล ผู้เชี่ยวชาญ EMA RSI MACD Bollinger Bands "
