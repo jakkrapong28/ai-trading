@@ -217,7 +217,8 @@ export default function Dashboard() {
   // สถิติยอดพอร์ตและการเทรด
   const totalEquity = (balances || []).reduce((sum, b) => sum + b.equity, 0);
   const activeTradesCount = (orders || []).filter((o) => o.status === "PENDING" || o.status === "OPEN").length;
-  const todayPnLSum = (orders || []).reduce((sum, o) => sum + o.pnl, 0);
+  const closedOrders = (orders || []).filter((o) => o.status === "CLOSED");
+  const todayPnLSum = closedOrders.reduce((sum, o) => sum + o.pnl, 0);
 
   // เลื่อนหน้าต่างแชทลงด้านล่างอัตโนมัติ
   useEffect(() => {
@@ -2556,13 +2557,13 @@ export default function Dashboard() {
               
               <div className="bg-[#111520] border border-[#1e2d45] rounded-xl p-4 text-center">
                 <div className="text-xs text-slate-400">Total Trades</div>
-                <div className="text-3xl font-bold text-white mt-2">{orders.length}</div>
+                <div className="text-3xl font-bold text-white mt-2">{closedOrders.length}</div>
               </div>
 
               <div className="bg-[#111520] border border-[#1e2d45] rounded-xl p-4 text-center">
                 <div className="text-xs text-slate-400">Win Rate</div>
                 <div className="text-3xl font-bold text-[#10b981] mt-2">
-                  {orders.length > 0 ? ((orders.filter(o => o.pnl > 0).length / orders.length) * 100).toFixed(1) : 0}%
+                  {closedOrders.length > 0 ? ((closedOrders.filter(o => o.pnl > 0).length / closedOrders.length) * 100).toFixed(1) : 0}%
                 </div>
               </div>
 
@@ -2594,7 +2595,7 @@ export default function Dashboard() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800 font-mono">
-                    {orders.slice(0, 10).map((ord, idx) => (
+                    {closedOrders.map((ord, idx) => (
                       <tr key={idx} className="hover:bg-[#070a0f]/40">
                         <td className="py-2 text-slate-500 truncate max-w-[100px]">{ord.id}</td>
                         <td className="py-2 font-bold text-white">{ord.symbol}</td>
