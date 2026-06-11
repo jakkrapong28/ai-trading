@@ -49,6 +49,7 @@ class RiskApprovedEvent(BaseModel):
     take_profit: float
     strategy_name: str
     atr_at_entry: float
+    market_regime: Optional[str] = None
 
 class RiskRejectedEvent(BaseModel):
     ticker: str

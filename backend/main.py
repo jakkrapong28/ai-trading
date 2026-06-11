@@ -284,7 +284,9 @@ async def handle_telegram_command_logic(cmd: str, user_tag: str) -> str:
         else:
             prices_list = []
         indicators = get_market_indicators(prices_list, current_symbol)
-        signal = evaluate_strategy_rules(indicators, current_symbol)
+        from backend.engines.market_regime import regime_managers
+        regime = regime_managers[current_symbol].current_regime if current_symbol in regime_managers else None
+        signal = evaluate_strategy_rules(indicators, current_symbol, regime=regime)
         risk = check_trade_risk(
             current_symbol,
             signal["action"],
@@ -406,7 +408,9 @@ async def websocket_bridge():
                         else:
                             prices_list = []
                         indicators = get_market_indicators(prices_list, current_symbol)
-                        signal = evaluate_strategy_rules(indicators, current_symbol)
+                        from backend.engines.market_regime import regime_managers
+                        regime = regime_managers[current_symbol].current_regime if current_symbol in regime_managers else None
+                        signal = evaluate_strategy_rules(indicators, current_symbol, regime=regime)
                         risk = check_trade_risk(
                             current_symbol,
                             signal["action"],
@@ -586,6 +590,13 @@ async def debug_prices():
 
 @app.get("/api/state")
 async def get_state():
+    from backend.engines.market_regime import regime_managers
+    from backend.engines.risk import cb_manager, CORRELATION_REJECTION_COUNT
+    from backend.brokers.paper import BrokerHeartbeat
+    from backend.core.base import NAN_DETECTION_COUNT
+    from backend.config import FEATURE_FLAGS
+    from backend.shared.database.models import SMCSignalLog
+
     df = ticker_data.get(current_symbol)
     if df is not None and not df.empty:
         prices_list = df['price'].tolist()
@@ -593,7 +604,8 @@ async def get_state():
         prices_list = []
     
     indicators = get_market_indicators(prices_list, current_symbol)
-    signal = evaluate_strategy_rules(indicators, current_symbol)
+    regime = regime_managers[current_symbol].current_regime if current_symbol in regime_managers else None
+    signal = evaluate_strategy_rules(indicators, current_symbol, regime=regime)
     
     risk = check_trade_risk(
         current_symbol,
@@ -610,6 +622,22 @@ async def get_state():
     orders = await load_orders_from_db()
     balances = await calculate_balances()
     
+    db = SessionLocal()
+    try:
+        calibrated_count = db.query(SMCSignalLog).filter(SMCSignalLog.calibrated_at.isnot(None)).count()
+        pending_count = db.query(SMCSignalLog).filter(SMCSignalLog.actual_outcome == "PENDING").count()
+    except Exception:
+        calibrated_count = 0
+        pending_count = 0
+    finally:
+        db.close()
+        
+    broker_heartbeat = None
+    if hasattr(BrokerHeartbeat, "_instance") and BrokerHeartbeat._instance:
+        hb = BrokerHeartbeat._instance.last_heartbeat
+        if hb:
+            broker_heartbeat = hb.isoformat()
+            
     return {
         "symbol": current_symbol,
         "latest": indicators["latest"],
@@ -630,6 +658,22 @@ async def get_state():
             "news_api_key": os.getenv("NEWS_API_KEY", ""),
             "twelvedata_api_key": os.getenv("TWELVEDATA_API_KEY", ""),
             "finnhub_api_key": os.getenv("FINNHUB_API_KEY", "")
+        },
+        "feature_flags": FEATURE_FLAGS,
+        "circuit_breaker": cb_manager.breakers,
+        "heartbeats": {
+            "broker": broker_heartbeat,
+            "system": datetime.now(timezone.utc).isoformat()
+        },
+        "nan_logs": {
+            "count": NAN_DETECTION_COUNT
+        },
+        "calibration": {
+            "calibrated_count": calibrated_count,
+            "pending_count": pending_count
+        },
+        "correlation_rejections": {
+            "count": CORRELATION_REJECTION_COUNT
         }
     }
 
@@ -662,7 +706,9 @@ async def update_risk(req: RiskRequest):
         prices_list = []
         
     indicators = get_market_indicators(prices_list, current_symbol)
-    signal = evaluate_strategy_rules(indicators, current_symbol)
+    from backend.engines.market_regime import regime_managers
+    regime = regime_managers[current_symbol].current_regime if current_symbol in regime_managers else None
+    signal = evaluate_strategy_rules(indicators, current_symbol, regime=regime)
     
     risk = check_trade_risk(
         current_symbol,
@@ -704,7 +750,9 @@ async def approve_trade():
     else:
         prices_list = []
     indicators = get_market_indicators(prices_list, current_symbol)
-    signal = evaluate_strategy_rules(indicators, current_symbol)
+    from backend.engines.market_regime import regime_managers
+    regime = regime_managers[current_symbol].current_regime if current_symbol in regime_managers else None
+    signal = evaluate_strategy_rules(indicators, current_symbol, regime=regime)
     
     action = signal["action"]
     if action not in ["BUY", "SELL"]:
@@ -800,6 +848,60 @@ async def reset_data():
     ]
     
     return {"status": "success", "message": "รีเซ็ตประวัติการเทรดและระบบ ERP เรียบร้อย"}
+
+@app.post("/api/emergency-stop")
+async def emergency_stop():
+    import os
+    from backend.config import FEATURE_FLAGS
+    from backend.alert import send_alert
+    
+    os.environ["PORTFOLIO_CRITICAL_WATCH"] = "true"
+    
+    # Close all active positions in DB
+    db = SessionLocal()
+    try:
+        open_trades = db.query(Trade).filter(
+            Trade.status.in_([TradeStatus.OPEN, TradeStatus.RUNNING, TradeStatus.PARTIAL])
+        ).all()
+        for t in open_trades:
+            t.status = TradeStatus.CLOSED
+            t.closed_at = datetime.utcnow()
+            t.exit_price = t.entry_price or 0.0
+            t.realized_pnl = 0.0
+            
+            from backend.shared.schema.events import ExecutionEvent
+            closed_event = ExecutionEvent(
+                trade_id=t.id,
+                ticker=t.ticker,
+                action=t.action.value,
+                status="CLOSED",
+                lot_size=t.lot_size,
+                exit_price=t.exit_price,
+                realized_pnl=t.realized_pnl,
+                message="EMERGENCY STOP Close"
+            )
+            await event_bus.publish(CH_EXEC_CLOSED, closed_event.model_dump())
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error during emergency stop DB close: {e}")
+    finally:
+        db.close()
+
+    # Disable all flags except circuit_breaker_v2 & emergency_stop
+    for flag in list(FEATURE_FLAGS.keys()):
+        if flag not in ("circuit_breaker_v2", "emergency_stop"):
+            FEATURE_FLAGS[flag] = False
+            
+    await send_alert("CRITICAL", "🚨 EMERGENCY STOP activated by user")
+    await manager.broadcast({"type": "emergency_stop", "message": "🛑 ระบบหยุดฉุกเฉิน!"})
+    return {"success": True}
+
+@app.post("/api/calibrate")
+async def trigger_calibration():
+    from backend.core.smc_calibrate import run_calibration
+    await run_calibration()
+    return {"status": "success", "message": "Calibration completed successfully."}
 
 @app.post("/api/update-settings")
 async def update_settings(req: SettingsRequest):

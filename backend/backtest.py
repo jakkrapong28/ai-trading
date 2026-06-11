@@ -11,6 +11,7 @@ import asyncio
 import copy
 import httpx
 import pandas as pd
+import numpy as np
 from datetime import datetime
 from typing import Dict, List, Any, Optional, Tuple
 
@@ -37,6 +38,23 @@ EQUITY = RISK_CONFIG["equity"]
 ATR_MULT = 2.0
 RR_RATIO = 2.0
 
+SPREAD_COST_DICT = {
+    "XAUUSD": 25.0,
+    "BTCUSDT": 10.0,
+    "ETHUSDT": 8.0,
+    "EURUSD": 2.0,
+}
+COMMISSION_PCT = {
+    "XAUUSD": 0.0,
+    "BTCUSDT": 0.0001,  # 0.01%
+}
+
+def apply_trade_costs(trade: dict, symbol: str) -> dict:
+    spread_cost = SPREAD_COST_DICT.get(symbol, 5.0) * trade.get("lot", 0.01)
+    commission = abs(trade.get("pnl", 0.0)) * COMMISSION_PCT.get(symbol, 0.0)
+    trade["pnl"] = trade.get("pnl", 0.0) - spread_cost - commission
+    trade["costs"] = {"spread": spread_cost, "commission": commission}
+    return trade
 
 async def fetch_backtest_data(symbol: str, interval: str = "1h", range_val: str = "60d") -> pd.DataFrame:
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval={interval}&range={range_val}"
@@ -60,12 +78,69 @@ async def fetch_backtest_data(symbol: str, interval: str = "1h", range_val: str 
         })
         return df.dropna().reset_index(drop=True)
 
-
 def _macro_trend_at_bar(df: pd.DataFrame, i: int, lookback: int = 48) -> Optional[str]:
     start = max(0, i - lookback)
     closes = df["close"].iloc[start:i + 1].astype(float).tolist()
     return compute_macro_trend_from_closes(closes)
 
+def calculate_risk_of_ruin(pnls: List[float], initial_equity: float = 45750.00, ruin_fraction: float = 0.3, num_paths: int = 5000, path_len: int = 50) -> float:
+    if not pnls:
+        return 0.0
+    pnl_array = np.array(pnls)
+    if len(pnl_array) == 0:
+        return 0.0
+    choices = np.random.choice(pnl_array, size=(num_paths, path_len), replace=True)
+    cum_pnls = np.cumsum(choices, axis=1)
+    equity_paths = initial_equity + cum_pnls
+    min_equity_per_path = np.min(equity_paths, axis=1)
+    ruined_paths = min_equity_per_path <= initial_equity * (1 - ruin_fraction)
+    return float(np.sum(ruined_paths)) / num_paths
+
+def optimize_smc_parameters(
+    df: pd.DataFrame,
+    symbol: str,
+) -> Dict[str, Any]:
+    best_score = -1.0
+    best_cfg = {
+        "smc_strategy": True,
+        "ob_size_atr": 0.5,
+        "fvg_gap_atr": 0.3,
+        "mtf_strategy": True
+    }
+    best_result = None
+    
+    # Sweep ob_size_atr from 0.4 to 0.7, fvg_gap_atr from 0.2 to 0.4
+    ob_range = [0.4, 0.5, 0.6, 0.7]
+    fvg_range = [0.2, 0.25, 0.3, 0.35, 0.4]
+    
+    for ob in ob_range:
+        for fvg in fvg_range:
+            cfg = {
+                "smc_strategy": True,
+                "ob_size_atr": ob,
+                "fvg_gap_atr": fvg,
+                "mtf_strategy": True
+            }
+            result = run_strategy_backtest(df, symbol, cfg=cfg)
+            m = result["metrics"]
+            if m["total_trades"] < 3:
+                continue
+            
+            pf = min(m["profit_factor"], 5.0)
+            wr = m["win_rate"] / 100.0
+            dd_penalty = 1.0 - min(m["max_drawdown"] / 30.0, 0.5)
+            score = wr * pf * dd_penalty * (1 + m["total_trades"] / 100)
+            if score > best_score:
+                best_score = score
+                best_cfg = cfg
+                best_result = result
+                
+    return {
+        "symbol": symbol,
+        "best_config": best_cfg,
+        "best_score": round(best_score, 4),
+        "result": best_result
+    }
 
 def run_strategy_backtest(
     df: pd.DataFrame,
@@ -76,7 +151,6 @@ def run_strategy_backtest(
     equity: float = EQUITY,
 ) -> Dict[str, Any]:
     """รัน backtest ต่อกลยุทธ์ — ใช้ OHLC ATR + dynamic lot sizing"""
-    spec = SYMBOLS.get(symbol, SYMBOLS["XAUUSD"])
     cfg = cfg or get_strategy_config(symbol)
     trades: List[Dict] = []
     active_trade = None
@@ -109,6 +183,7 @@ def run_strategy_backtest(
                     "status": "CLOSED",
                     "result": "SL" if hit_sl else "TP",
                 })
+                active_trade = apply_trade_costs(active_trade, symbol)
                 trades.append(active_trade)
                 active_trade = None
 
@@ -119,9 +194,35 @@ def run_strategy_backtest(
         indicators = get_market_indicators(ohlc_window, symbol)
         macro = _macro_trend_at_bar(df, i) if use_mtf else None
 
-        signal = evaluate_strategy_rules(
-            indicators, symbol, macro, strategy_filter=strategy_filter, cfg=cfg
-        )
+        if cfg and cfg.get("smc_strategy", False):
+            from backend.core.smc import detect_smc_concepts, calculate_signal_confidence
+            atr = indicators["atr"]
+            ob_size = cfg.get("ob_size_atr", 0.5)
+            fvg_gap = cfg.get("fvg_gap_atr", 0.3)
+            concepts = detect_smc_concepts(ohlc_window, atr, ob_size_atr=ob_size, fvg_gap_atr=fvg_gap)
+            d1_aligned = True
+            if use_mtf and macro:
+                d1_aligned = (macro != "Sideways")
+            concepts["d1_aligned"] = d1_aligned
+            
+            conf = calculate_signal_confidence(concepts)
+            action = "WAIT"
+            if conf >= 0.55:
+                action = "BUY" if indicators.get("ema_fast", 0.0) > indicators.get("ema_slow", 0.0) else "SELL"
+                if action == "SELL" and macro == "Bullish":
+                    action = "WAIT"
+                elif action == "BUY" and macro == "Bearish":
+                    action = "WAIT"
+            
+            signal = {
+                "action": action,
+                "strategy_type": "SMC",
+                "confidence": conf
+            }
+        else:
+            signal = evaluate_strategy_rules(
+                indicators, symbol, macro, strategy_filter=strategy_filter, cfg=cfg
+            )
 
         if signal["action"] not in ("BUY", "SELL"):
             continue
@@ -136,12 +237,12 @@ def run_strategy_backtest(
         tp = entry + stop_dist * RR_RATIO if action == "BUY" else entry - stop_dist * RR_RATIO
         active_trade = {
             "action": action,
-                "strategy_type": signal.get("strategy_type", "UNKNOWN"),
-                "entry_price": entry,
-                "entry_time": row["timestamp"],
-                "stop_loss": sl,
-                "take_profit": tp,
-                "lot": pos["lot"],
+            "strategy_type": signal.get("strategy_type", "UNKNOWN"),
+            "entry_price": entry,
+            "entry_time": row["timestamp"],
+            "stop_loss": sl,
+            "take_profit": tp,
+            "lot": pos["lot"],
             "status": "OPEN",
         }
 
@@ -149,15 +250,60 @@ def run_strategy_backtest(
     metrics = calculate_performance_metrics(closed)
     return {
         "symbol": symbol,
-        "strategy": strategy_filter or "COMBINED",
+        "strategy": strategy_filter or ("SMC" if cfg.get("smc_strategy", False) else "COMBINED"),
         "trades": closed,
         "metrics": metrics,
         "config": cfg,
     }
 
+def run_walk_forward_backtest(df: pd.DataFrame, symbol: str, smc_strategy: bool = True) -> List[Dict[str, Any]]:
+    """Runs a Walk-Forward backtest with 500-bar rolling in-sample and 200-bar out-of-sample windows."""
+    in_sample_len = 500
+    oos_len = 200
+    step_len = 200
+    
+    results = []
+    num_bars = len(df)
+    
+    for start_idx in range(0, num_bars - in_sample_len, step_len):
+        in_sample_end = start_idx + in_sample_len
+        oos_end = min(in_sample_end + oos_len, num_bars)
+        
+        if oos_end <= in_sample_end:
+            break
+            
+        in_sample_df = df.iloc[start_idx:in_sample_end].reset_index(drop=True)
+        oos_df = df.iloc[in_sample_end:oos_end].reset_index(drop=True)
+        
+        # Optimize on In-Sample
+        if smc_strategy:
+            opt_res = optimize_smc_parameters(in_sample_df, symbol)
+        else:
+            opt_res = optimize_rsi_thresholds(in_sample_df, symbol)
+            
+        best_cfg = opt_res["best_config"]
+        
+        # Validate on Out-of-Sample
+        oos_res = run_strategy_backtest(oos_df, symbol, cfg=best_cfg)
+        
+        # Calculate Risk of Ruin for this OOS window
+        trades_pnls = [t["pnl"] for t in oos_res["trades"]]
+        ror = calculate_risk_of_ruin(trades_pnls, initial_equity=EQUITY)
+        
+        oos_metrics = oos_res["metrics"].copy()
+        oos_metrics["risk_of_ruin"] = ror
+        
+        results.append({
+            "in_sample_range": (start_idx, in_sample_end),
+            "oos_range": (in_sample_end, oos_end),
+            "best_config": best_cfg,
+            "oos_metrics": oos_metrics,
+            "trades_count": len(oos_res["trades"])
+        })
+        
+    return results
 
 def _precompute_bars(df: pd.DataFrame, symbol: str, use_mtf: bool = True) -> List[Dict]:
-    """Pre-compute indicators + macro trend per bar (speed up optimization)"""
     bars = []
     warmup = 50
     for i in range(warmup, len(df)):
@@ -171,12 +317,10 @@ def _precompute_bars(df: pd.DataFrame, symbol: str, use_mtf: bool = True) -> Lis
         })
     return bars
 
-
 def _simulate_from_bars(
     bars: List[Dict], symbol: str, strategy_filter: Optional[str],
     cfg: Dict, equity: float = EQUITY,
 ) -> Dict[str, Any]:
-    """Fast simulation using pre-computed indicator bars"""
     trades: List[Dict] = []
     active_trade = None
 
@@ -195,6 +339,7 @@ def _simulate_from_bars(
                 exit_price = active_trade["stop_loss"] if hit_sl else active_trade["take_profit"]
                 pnl = trade_pnl(symbol, active_trade["action"], active_trade["entry_price"], exit_price, active_trade["lot"])
                 active_trade.update({"pnl": pnl, "status": "CLOSED"})
+                active_trade = apply_trade_costs(active_trade, symbol)
                 trades.append(active_trade)
                 active_trade = None
             if active_trade:
@@ -218,13 +363,11 @@ def _simulate_from_bars(
     closed = [t for t in trades if t.get("status") == "CLOSED"]
     return {"symbol": symbol, "strategy": strategy_filter or "COMBINED", "trades": closed, "metrics": calculate_performance_metrics(closed), "config": cfg}
 
-
 def optimize_rsi_thresholds(
     df: pd.DataFrame,
     symbol: str,
     strategy_filter: str = "REVERSAL",
 ) -> Dict[str, Any]:
-    """Grid search RSI thresholds — maximize win rate x profit factor (penalize drawdown)"""
     best_score = -1.0
     best_cfg = get_strategy_config(symbol)
     best_result = None
@@ -265,7 +408,6 @@ def optimize_rsi_thresholds(
 
     return {"symbol": symbol, "best_config": best_cfg, "best_score": round(best_score, 4), "result": best_result}
 
-
 def print_backtest_report(result: Dict[str, Any]):
     m = result["metrics"]
     label = result.get("strategy", "COMBINED")
@@ -288,7 +430,6 @@ def print_backtest_report(result: Dict[str, Any]):
         print(f"  RSI SELL:      early>{cfg.get('rsi_sell_early')} full>{cfg.get('rsi_sell_full')}")
         print(f"  RSI BUY:       early<{cfg.get('rsi_buy_early')} full<{cfg.get('rsi_buy_full')}")
 
-
 def run_full_report(symbols: List[str] = None, interval: str = "1h", range_val: str = "60d"):
     symbols = symbols or BACKTEST_SYMBOLS
     all_results = {}
@@ -306,7 +447,6 @@ def run_full_report(symbols: List[str] = None, interval: str = "1h", range_val: 
             print_backtest_report(result)
 
     return all_results
-
 
 def run_optimize(symbols: List[str] = None, interval: str = "1h", range_val: str = "30d"):
     symbols = symbols or BACKTEST_SYMBOLS
@@ -347,6 +487,80 @@ def run_optimize(symbols: List[str] = None, interval: str = "1h", range_val: str
 
     return optimized
 
+def run_walk_forward_report(symbols: List[str] = None, interval: str = "1h", range_val: str = "90d"):
+    symbols = symbols or BACKTEST_SYMBOLS
+    print("\n" + "="*80)
+    print("  WALK-FORWARD BACKTEST & SMC SWEEP PARAMETER OPTIMIZATION")
+    print("="*80)
+    
+    pass_criteria = {
+        "sharpe_ratio": 1.0,
+        "profit_factor": 1.3,
+        "max_drawdown": 15.0, # 15%
+        "risk_of_ruin": 0.05, # 5%
+    }
+    
+    for sym in symbols:
+        yf_sym = YAHOO_SYMBOL_MAP.get(sym, sym)
+        print(f"\n[FETCH] {sym} ({yf_sym}) from Yahoo Finance...")
+        try:
+            df = asyncio.run(fetch_backtest_data(yf_sym, interval, range_val))
+            print(f"   Fetched {len(df)} bars.")
+            if len(df) < 700:
+                print(f"   [WARN] Insufficient data ({len(df)} bars) for 500/200 walk-forward. Skipping.")
+                continue
+        except Exception as e:
+            print(f"   [ERROR] Failed to fetch data: {e}")
+            continue
+            
+        print(f"\n[RUN] Walk-Forward Validation (SMC Strategy Sweep)...")
+        results = run_walk_forward_backtest(df, sym, smc_strategy=True)
+        
+        print(f"\n  Walk-Forward Windows Report for {sym}:")
+        print("-"*105)
+        print(f"{'Window':<8} | {'In-Sample':<10} | {'Out-Sample':<10} | {'Trades':<6} | {'Sharpe':<6} | {'PF':<5} | {'MaxDD %':<7} | {'Ruin %':<6} | {'Verdict':<7}")
+        print("-"*105)
+        
+        passed_windows = 0
+        total_windows = len(results)
+        
+        for idx, res in enumerate(results):
+            m = res["oos_metrics"]
+            is_r = f"{res['in_sample_range'][0]}-{res['in_sample_range'][1]}"
+            os_r = f"{res['oos_range'][0]}-{res['oos_range'][1]}"
+            
+            # Check criteria
+            pf = m["profit_factor"]
+            sharpe = m["sharpe_ratio"]
+            max_dd = m["max_drawdown"]
+            ror = m["risk_of_ruin"]
+            
+            pf_pass = pf >= pass_criteria["profit_factor"] or pf == float('inf')
+            sharpe_pass = sharpe >= pass_criteria["sharpe_ratio"]
+            dd_pass = max_dd <= pass_criteria["max_drawdown"]
+            ror_pass = ror <= pass_criteria["risk_of_ruin"]
+            
+            window_passed = pf_pass and sharpe_pass and dd_pass and ror_pass
+            if window_passed:
+                passed_windows += 1
+                verdict = "PASS 🟢"
+            else:
+                verdict = "FAIL 🔴"
+                
+            print(f"#{idx+1:<7} | {is_r:<10} | {os_r:<10} | {res['trades_count']:<6} | {sharpe:<6.2f} | {pf:<5.2f} | {max_dd:<7.2f} | {ror*100:<5.1f}% | {verdict}")
+            
+            # Print best config parameters
+            cfg = res["best_config"]
+            print(f"          Best Config: ob_size_atr={cfg.get('ob_size_atr')}, fvg_gap_atr={cfg.get('fvg_gap_atr')}")
+            
+        print("-"*105)
+        pass_ratio = (passed_windows / total_windows * 100) if total_windows > 0 else 0.0
+        print(f"  Result: {passed_windows}/{total_windows} windows passed ({pass_ratio:.1f}%)")
+        if pass_ratio >= 60.0:
+            print(f"  [STATUS] Robustness check PASSED for {sym} 🟢")
+        else:
+            print(f"  [STATUS] Robustness check FAILED for {sym} 🔴 (Requires >=60% windows passing)")
+        print("="*80)
 
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "run"
@@ -355,6 +569,9 @@ if __name__ == "__main__":
     if cmd == "optimize":
         syms = [sym_arg] if sym_arg and sym_arg in BACKTEST_SYMBOLS else BACKTEST_SYMBOLS
         run_optimize(syms)
+    elif cmd == "walkforward":
+        syms = [sym_arg] if sym_arg and sym_arg in BACKTEST_SYMBOLS else BACKTEST_SYMBOLS
+        run_walk_forward_report(syms)
     elif cmd == "run":
         if sym_arg and sym_arg in BACKTEST_SYMBOLS:
             yf = YAHOO_SYMBOL_MAP.get(sym_arg, sym_arg)
@@ -364,4 +581,4 @@ if __name__ == "__main__":
         else:
             run_full_report()
     else:
-        print("Usage: python backend/backtest.py [run|optimize] [XAUUSD|BTCUSDT|ETHUSDT]")
+        print("Usage: python backend/backtest.py [run|optimize|walkforward] [XAUUSD|BTCUSDT|ETHUSDT]")

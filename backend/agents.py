@@ -9,11 +9,63 @@ logger = logging.getLogger("ai-decision-engine")
 
 AGENTS = ["CEO", "Chart", "Risk", "News", "Macro", "AssetSpecialist"]
 
+async def call_claude_vote(agent_name: str, signal: SignalEvent) -> dict:
+    import os
+    import json
+    import re
+    import httpx
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise ValueError("ANTHROPIC_API_KEY is not set")
+
+    headers = {
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json"
+    }
+    
+    prompt = (
+        f"You are the {agent_name} agent in an AI Trading system committee.\n"
+        f"Signal details: Ticker: {signal.ticker}, Action: {signal.signal_type}, "
+        f"Confidence Score: {signal.confidence_score:.2f}, Price: {signal.price_at_signal:.2f}, Reasoning: {signal.reasoning}.\n"
+        f"Decide whether to vote BUY, SELL, HOLD, or REJECT for this signal. Return your decision and confidence score (0.0 to 1.0) and a brief reasoning in JSON format only: "
+        f'{{"action": "BUY/SELL/HOLD/REJECT", "confidence": 0.85, "reasoning": "your reasoning"}}'
+    )
+
+    payload = {
+        "model": "claude-3-haiku-20240307",
+        "max_tokens": 150,
+        "messages": [{"role": "user", "content": prompt}]
+    }
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            "https://api.anthropic.com/v1/messages",
+            headers=headers,
+            json=payload,
+            timeout=5.0
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            text = data["content"][0]["text"]
+            m = re.search(r'\{.*\}', text, re.DOTALL)
+            if m:
+                res = json.loads(m.group(0))
+                if "action" in res and "confidence" in res and "reasoning" in res:
+                    return res
+        raise RuntimeError(f"Claude API failed: status {resp.status_code}")
+
 async def deterministic_agent_vote(agent_name: str, signal: SignalEvent) -> dict:
     """
-    Strict deterministic rules for each agent.
-    No randomness allowed.
+    Strict deterministic rules for each agent with Claude API fallback.
     """
+    from backend.config import FEATURE_FLAGS
+    if FEATURE_FLAGS.get("claude_fallback", False):
+        try:
+            return await call_claude_vote(agent_name, signal)
+        except Exception as e:
+            logger.warning(f"Claude API vote failed for {agent_name}, falling back to rules: {e}")
+
     action = "HOLD"
     confidence = 0.5
     reasoning = ""

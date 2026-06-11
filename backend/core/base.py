@@ -1,10 +1,36 @@
 import math
 import random
 import statistics
+import logging
+import hashlib
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 from collections import deque
 import pandas as pd
 import numpy as np
+
+logger = logging.getLogger("core")
+
+NAN_DETECTION_COUNT = 0
+
+def validate_atr(atr: float, symbol: str = "XAUUSD", context: str = "") -> float:
+    """NaN/Inf guard — ถ้า ATR เสีย ใช้ historical median หรือ symbol volatility แทนค่าคงที่"""
+    global NAN_DETECTION_COUNT
+    if atr is None or math.isnan(atr) or math.isinf(atr) or atr <= 0:
+        NAN_DETECTION_COUNT += 1
+        fallback = SYMBOLS.get(symbol, SYMBOLS["XAUUSD"]).get("volatility", 5.0) * 0.5
+        logger.warning(f"⚠️ Invalid ATR ({atr}) ใน {context} — fallback เป็น {fallback:.2f} ({symbol})")
+        return fallback
+    return atr
+
+def validate_price(price: float, context: str = "") -> float:
+    """NaN/Inf guard สำหรับราคา"""
+    global NAN_DETECTION_COUNT
+    if price is None or math.isnan(price) or math.isinf(price) or price <= 0:
+        NAN_DETECTION_COUNT += 1
+        logger.error(f"❌ Invalid price ({price}) ใน {context}")
+        raise ValueError(f"Invalid price: {price} ใน {context}")
+    return price
 
 # ค่าคอนฟิกความเสี่ยงตามนโยบายระบบเทรดของคุณโทนี่
 RISK_CONFIG = {
@@ -390,9 +416,24 @@ def evaluate_trend_following(indicators: Dict[str, Any], symbol: str, cfg: Optio
     result["sell_score"] = sell_score
     return result
 
-def evaluate_reversal(indicators: Dict[str, Any], symbol: str, cfg: Optional[Dict] = None) -> Dict[str, Any]:
+RSI_THRESHOLDS = {
+    "BULL":     {"oversold": 40, "overbought": 75},
+    "BEAR":     {"oversold": 25, "overbought": 60},
+    "SIDEWAYS": {"oversold": 35, "overbought": 65},
+    "VOLATILE": {"oversold": 20, "overbought": 80},
+}
+
+def evaluate_reversal(indicators: Dict[str, Any], symbol: str, cfg: Optional[Dict] = None, regime: Optional[str] = None) -> Dict[str, Any]:
     """กลยุทธ์ reversal — RSI extreme + location + MACD + volume confirmation"""
     cfg = cfg or get_strategy_config(symbol)
+    if regime and regime in RSI_THRESHOLDS:
+        oversold = RSI_THRESHOLDS[regime]["oversold"]
+        overbought = RSI_THRESHOLDS[regime]["overbought"]
+        cfg = cfg.copy()
+        cfg["rsi_buy_early"] = oversold
+        cfg["rsi_buy_full"] = oversold - 4
+        cfg["rsi_sell_early"] = overbought
+        cfg["rsi_sell_full"] = overbought + 3
     ctx = _indicator_context(indicators)
     vol_ok = ctx["vol_ratio"] >= cfg["volume_confirm_min"]
 
@@ -510,6 +551,7 @@ def evaluate_strategy_rules(
     macro_trend_1h: Optional[str] = None,
     strategy_filter: Optional[str] = None,
     cfg: Optional[Dict] = None,
+    regime: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     ประเมินสัญญาณ — แยก trend / reversal แล้วเลือกตัวที่เหมาะสม
@@ -517,7 +559,7 @@ def evaluate_strategy_rules(
     """
     cfg = cfg or get_strategy_config(symbol)
     trend_sig = evaluate_trend_following(indicators, symbol, cfg)
-    reversal_sig = evaluate_reversal(indicators, symbol, cfg)
+    reversal_sig = evaluate_reversal(indicators, symbol, cfg, regime)
 
     if strategy_filter == "TREND_FOLLOWING":
         primary = trend_sig
@@ -584,6 +626,9 @@ def calculate_position_size(
     spec = SYMBOLS.get(symbol, SYMBOLS["XAUUSD"])
     contract_size = spec.get("contractSize", 100)
     asset_class = spec.get("assetClass", "metal")
+
+    atr = validate_atr(atr, symbol, "calculate_position_size")
+    equity = validate_price(equity, "calculate_position_size: equity")
 
     stop_distance = atr * atr_multiplier
     stop_distance = max(stop_distance, spec["volatility"] * 0.5)
@@ -743,3 +788,52 @@ def calculate_performance_metrics(trades: List[Dict]) -> Dict[str, Any]:
         "total_pnl": round(total_pnl, 2),
         "calmar_ratio": round(calmar, 2)
     }
+
+# ─────────────────────────────────────────────────────────
+# Order Duplication Guard
+# ─────────────────────────────────────────────────────────
+
+class OrderDeduplicator:
+    def __init__(self, maxlen: int = 100):
+        self._queue: deque = deque(maxlen=maxlen)
+        self._set: set = set()  # O(1) lookup
+
+    def make_signal_id(self, symbol: str, action: str, entry_price: float) -> str:
+        rounded_ts = int(datetime.now(timezone.utc).timestamp() / 300) * 300
+        raw = f"{symbol}_{action}_{entry_price:.2f}_{rounded_ts}"
+        return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+    def is_duplicate(self, symbol: str, action: str, entry_price: float) -> bool:
+        signal_id = self.make_signal_id(symbol, action, entry_price)
+        return signal_id in self._set  # O(1)
+
+    def mark_executed(self, symbol: str, action: str, entry_price: float):
+        signal_id = self.make_signal_id(symbol, action, entry_price)
+        if len(self._queue) == self._queue.maxlen:
+            evicted = self._queue.popleft()
+            self._set.discard(evicted)
+        self._queue.append(signal_id)
+        self._set.add(signal_id)
+
+order_deduplicator = OrderDeduplicator()
+
+def needs_confirmation(signal: dict) -> bool:
+    confidence = signal.get("confidence") or signal.get("confidence_score") or 0.0
+    if confidence >= 0.85:
+        return False
+    return True
+
+def confirm_signal(signal: dict, ohlc: pd.DataFrame, atr: float) -> bool:
+    if not needs_confirmation(signal):
+        return True
+    zone = signal.get("zone_price") or signal.get("price_at_signal")
+    if zone is None:
+        return True
+    last_close = ohlc["close"].iloc[-1]
+    buffer = atr * 0.1  # 10% of ATR — adaptive
+    action = signal.get("action") or signal.get("signal_type")
+    if action == "BUY":
+        return last_close > zone + buffer
+    else:
+        return last_close < zone - buffer
+

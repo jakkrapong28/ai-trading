@@ -63,6 +63,11 @@ class Trade(Base):
     pnl_percentage = Column(Float, nullable=True)
     opened_at = Column(DateTime, default=datetime.utcnow)
     closed_at = Column(DateTime, nullable=True)
+    highest_price = Column(Float, nullable=True)
+    tp1_hit = Column(Boolean, default=False)
+    tp2_hit = Column(Boolean, default=False)
+    tp3_hit = Column(Boolean, default=False)
+    market_regime = Column(String, nullable=True)
     position = relationship("Position", back_populates="trades")
 
 class AIDecisionJournal(Base):
@@ -151,3 +156,32 @@ class ERPDeliveryRecord(Base):
     response_body = Column(String, nullable=True)
     status = Column(String, default="PENDING")
     created_at = Column(DateTime, default=datetime.utcnow)
+
+class SignalCooldown(Base):
+    __tablename__ = "signal_cooldowns"
+    id = Column(Integer, primary_key=True, index=True)
+    symbol = Column(String, index=True)
+    signal_type = Column(String, index=True)
+    cooldown_until = Column(DateTime, index=True)
+
+class SMCSignalLog(Base):
+    __tablename__ = "smc_signal_logs"
+    id = Column(Integer, primary_key=True, index=True)
+    symbol = Column(String, index=True)
+    signal_type = Column(String, index=True)
+    confidence = Column(Float)
+    calibrated_confidence = Column(Float, nullable=True)
+    actual_outcome = Column(String, default="PENDING")
+    calibrated_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class StrategyStats(Base):
+    __tablename__ = "strategy_stats"
+    id = Column(Integer, primary_key=True, index=True)
+    symbol = Column(String, index=True)
+    regime = Column(String, index=True)
+    win_rate = Column(Float, default=0.5)
+    avg_win = Column(Float, default=0.0)
+    avg_loss = Column(Float, default=0.0)
+    total_trades = Column(Integer, default=0)
+    updated_at = Column(DateTime, default=datetime.utcnow)

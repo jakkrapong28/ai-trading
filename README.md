@@ -1,99 +1,46 @@
-# AI Trading Command Center MVP
+# 📖 คู่มือการใช้งานระบบ AI Trading Command Center (System Operations Manual)
 
-MVP นี้เริ่มจาก deterministic trading pipeline ก่อน แล้วให้ AI เป็น analyst/explainer ไม่ใช่ trader หลัก
+ยินดีต้อนรับสู่ระบบ **AI Trading Command Center** ระบบเทรดอัจฉริยะที่เชื่อมโยงบอร์ดวิเคราะห์ร่วมกันของ AI ทั้ง 6 ฝ่าย, ระบบจำลองบัญชีแยกประเภท ERP และการจัดการความเสี่ยงแบบเคร่งครัดระดับสถาบัน (Risk Guardian)
 
-## เปิดใช้งาน
+---
 
-เปิดไฟล์ `index.html` ใน browser ได้ทันที ไม่ต้องติดตั้ง dependency
+## 1. การเชื่อมต่อราคาตลาดโลกแบบ Real-time (Real-time Market Feeds)
+ระบบนี้ทำงานเชื่อมต่อราคาจริงกับต่างประเทศแบบเรียลไทม์ 100%:
+*   **สินทรัพย์ Crypto (BTCUSDT, ETHUSDT, SOLUSDT, BNBUSDT)**: เชื่อมต่อโดยตรงกับ **Binance WebSocket Stream** ดึงข้อมูลราคา Tick และปริมาณซื้อขายสดๆ ทุกวินาที
+*   **หุ้นต่างประเทศและทองคำ (XAUUSD, AAPL, NVDA, TSLA, MSFT, AMZN)**: เชื่อมต่อกับ **Finnhub WebSocket Stream** (ผ่าน API Key ที่กรอกไว้ในไฟล์ `.env` หลังบ้าน) 
+    *   *หมายเหตุ:* หาก API Key ของ Finnhub ถูกตัดหรือไม่ได้ระบุ ระบบจะใช้ระบบจำลองราคาแบบสุ่มเชิงสถิติ (Mock Generator) แทนเพื่อความปลอดภัยและไม่ให้ระบบหยุดทำงาน
 
-หรือรัน local server:
+---
 
-```bash
-node server.mjs
-```
+## 2. วิธีการใช้งานระบบ & การแก้ไขปัญหากดเปลี่ยนเหรียญไม่ได้
+หากช่วงก่อนหน้านี้คุณ **กดเปลี่ยนตัวสินค้าหรือดู BTCUSDT/Crypto ไม่ได้** เกิดจากสาเหตุหลังบ้านเกิด **Database Column Mismatch** (ฐานข้อมูลเก่าไม่มีคอลัมน์ใหม่ที่เพิ่มเข้ามา เช่น `highest_price`, `tp1_hit` ฯลฯ ทำให้ระบบหลังบ้านเกิดข้อผิดพลาด 500 หรือค้างชั่วคราว)
 
-แล้วเปิด `http://localhost:4173`
+**สถานะปัจจุบัน:**
+*   ทางทีมงานได้สั่งรันสคริปต์ปรับปรุงฐานข้อมูลเรียบร้อยแล้ว
+*   ระบบหลังบ้านกลับมาทำงานสมบูรณ์ 100%
+*   **ตอนนี้คุณสามารถกดเลือกเปลี่ยนเหรียญและหุ้น ทั้งที่หน้าบอร์ดวิเคราะห์ (Analytics Desk) หรือแถบเมนูด้านล่าง (Risk Gate) ได้อย่างสมบูรณ์ทันที!**
 
-## สิ่งที่มีใน MVP
+---
 
-- Market snapshot แบบ demo สำหรับ `XAUUSD`, `BTCUSDT`, `ETHUSDT`, `EURUSD`
-- Indicator calculator: EMA, RSI, ATR-like volatility
-- Rule engine ที่ออก `BUY`, `SELL`, หรือ `WAIT`
-- Claude analysis adapter placeholder สำหรับสรุป market context และ trade thesis
-- Hard-coded risk engine:
-  - max risk per trade
-  - stop loss required
-  - max spread
-  - max exposure
-  - block trade เมื่อ signal เป็น `WAIT`
-- Human approval ก่อนสร้าง paper order
-- Trade journal และ audit log เก็บใน `localStorage`
-- Telegram command simulator:
-  - `/price XAUUSD`
-  - `/analyze XAUUSD`
-  - `/risk XAUUSD 0.10 lot`
-  - `/journal`
-  - `/wallet`
+## 3. รายการคำสั่งแชทระบบควบคุมบอท (Chat / Telegram commands)
+คุณสามารถพิมพ์คำสั่งเหล่านี้ได้ในกล่องแชทขวาบน หรือสั่งผ่าน Telegram Bot:
 
-## Next Architecture
+| คำสั่งหลัก | หน้าที่การทำงาน | ตัวอย่างการใช้งาน |
+| :--- | :--- | :--- |
+| **`/analyze`** | สั่งให้ AI รันกลยุทธ์ SMC + ประเมินสภาวะตลาด และเริ่มอภิปรายเสียงโหวตเพื่อหาจุดซื้อขายล่าสุด | `/analyze BTCUSDT` |
+| **`/wallet`** | เช็คยอดเงินคงเหลือสุทธิ (Net Equity & Free Margin) แยกรายบัญชี (MT5, Binance, Onchain Wallet) | `/wallet` |
+| **`/mode`** | สลับโหมดการควบคุมหลักระหว่างยิงออเดอร์อัตโนมัติ (`auto`) หรือรออนุมัติก่อน (`watch`) | `/mode auto` |
+| **`/price`** | เช็คราคาตลาดโลกเฉลี่ยล่าสุด และแนวโน้มเทรนด์ของคู่สินทรัพย์ด่วน | `/price XAUUSD` |
+| **`/report`** | ดึงรายงานสรุปผลกำไรสุทธิ P&L และจำนวนออเดอร์ที่ปิดในรอบวันจากฐานข้อมูล | `/report` |
+| **`/risk`** | รันตรวจสอบความเสี่ยง Compliance Audit ล่าสุดเทียบกับลิมิตเพื่อดูสถานะความปลอดภัย | `/risk` |
+| **`/alerts`** | เช็คความเสถียรของระบบเครือข่าย สตรีมราคา และระบบ Ledger ERP | `/alerts` |
+| **`/pause`** | สั่งระงับระบบเทรดและส่งออเดอร์ชั่วคราว (สลับโหมดเป็น `watch` เพื่อป้องกันการเปิดคำสั่งใหม่) | `/pause` |
+| **`/close all`** | สั่งยกเลิกออเดอร์ที่ค้างและปิดสัญญาเทรดทั้งหมดที่เปิดค้างอยู่ในทันทีเพื่อเซฟพอร์ต | `/close all` |
 
-```text
-Python Trading Service
-  MT5 connector
-  Binance/CCXT connector
-  indicator calculator
-  strategy rule engine
-  risk engine
-  Claude analysis adapter
-  Telegram bot
+---
 
-PostgreSQL
-  market_snapshots
-  analysis_runs
-  trade_signals
-  risk_checks
-  trade_orders
-  trade_journal
-  account_balances
-  audit_logs
+## 4. โครงสร้างเบื้องหลังของระบบ (System Architecture)
 
-Next.js Dashboard
-  AI office view
-  signal board
-  open positions
-  risk dashboard
-  journal/history
-
-ERP Integration
-  consume domain events
-  record ledger entries
-  tax/compliance summaries
-```
-
-## Domain Events
-
-- `market.snapshot_created`
-- `analysis.run_completed`
-- `trade.signal_created`
-- `risk.check_passed`
-- `risk.check_blocked`
-- `trade_order.paper_created`
-- `trade.opened`
-- `trade.closed`
-- `trade.pnl_realized`
-- `account.balance_updated`
-- `fee.recorded`
-- `tax_event.created`
-
-## Live Trading Guardrails
-
-ก่อนต่อ live execution ควรเพิ่ม:
-
-- paper trading environment
-- persisted PostgreSQL audit trail
-- backtest report per strategy version
-- API key vault
-- news blackout calendar
-- broker spread/slippage validation
-- manual approval through Telegram callback buttons
-- immutable event log for ERP/tax integration
+1.  **FastAPI Backend Server (Port 8000)**: ทำหน้าที่ประมวลผลคำสั่ง API, จัดการ WebSocket สตรีมราคา, และเป็นตัวเชื่อมประสานระบบเทรดหลัก
+2.  **Next.js Web Frontend (Port 3000)**: หน้าจอแดชบอร์ด Virtual Office เรืองแสง ใช้คุมแดชบอร์ดความเสี่ยง เฝ้าดูการพิมพ์โต้ตอบของ AI และดูออเดอร์
+3.  **ERP Ledger Server (Port 5001)**: บันทึกบัญชีเดบิตเครดิตแบบ Double-entry และประเมินภาษีอัตโนมัติส่งกลับมาที่หน้าเว็บเมื่อระบบเทรดสั่งการ

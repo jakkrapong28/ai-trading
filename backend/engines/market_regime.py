@@ -3,7 +3,7 @@ import logging
 import json
 import numpy as np
 import pandas as pd
-from typing import Dict, List
+from typing import Dict, List, Any
 
 from backend.shared.events.core import EventBus, CH_MARKET_DATA, CH_MARKET_REGIME
 from backend.shared.schema.events import MarketTickEvent, MarketRegimeEvent
@@ -12,6 +12,7 @@ logger = logging.getLogger("market-regime-engine")
 
 # State
 ticker_data: Dict[str, pd.DataFrame] = {} # Store recent history
+regime_managers: Dict[str, Any] = {} # RegimeManagers for each ticker
 
 def calculate_indicators(df: pd.DataFrame) -> dict:
     close = df['price']
@@ -142,15 +143,23 @@ async def process_market_data(event_bus: EventBus):
             # Evaluate regime every 50 ticks per ticker
             if len(ticker_data[ticker]) >= 200 and counters[ticker] % 50 == 0:
                 regime_name, regime_score, trend, atr = calculate_regime(ticker_data[ticker])
+                
+                from backend.core.regime_transition import RegimeManager
+                if ticker not in regime_managers:
+                    regime_managers[ticker] = RegimeManager(initial_regime=regime_name)
+                    
+                regime_managers[ticker].update(regime_name)
+                confirmed_regime = regime_managers[ticker].current_regime
+                
                 event = MarketRegimeEvent(
                     ticker=ticker,
-                    regime=regime_name,
+                    regime=confirmed_regime,
                     volatility_score=regime_score, 
                     trend_strength=trend,
                     atr=atr
                 )
                 await event_bus.publish(CH_MARKET_REGIME, event.model_dump())
-                logger.info(f"Regime evaluated for {ticker}: {regime_name} (Trend: {trend:.1f}, ATR: {atr:.4f})")
+                logger.info(f"Regime evaluated for {ticker}: {confirmed_regime} (Raw: {regime_name}, Trend: {trend:.1f}, ATR: {atr:.4f})")
         except Exception as e:
             logger.error(f"Error processing tick for regime: {e}")
 

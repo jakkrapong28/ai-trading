@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import math
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any
 
@@ -10,6 +11,19 @@ from backend.shared.database.core import SessionLocal
 from backend.shared.database.models import Trade, TradeAction, TradeStatus, PortfolioSnapshot, TradeLedger, TaxLedger
 
 logger = logging.getLogger("portfolio-engine")
+
+def safe_float(val: Any, default: float = 0.0) -> float:
+    if val is None:
+        return default
+    try:
+        fval = float(val)
+        if math.isnan(fval) or math.isinf(fval):
+            logger.error(f"❌ Invalid float value ({val}) detected. Falling back to {default}")
+            return default
+        return fval
+    except (ValueError, TypeError) as e:
+        logger.error(f"❌ Error converting ({val}) to float: {e}. Falling back to {default}")
+        return default
 
 INITIAL_BALANCE = 10000.0
 DAILY_DRAWDOWN_LIMIT = 0.03
@@ -43,12 +57,13 @@ class PortfolioEngine:
         db = SessionLocal()
         try:
             closed_trades = db.query(Trade).filter(Trade.status == TradeStatus.CLOSED).all()
-            total_pnl = sum([t.realized_pnl for t in closed_trades if t.realized_pnl])
+            total_pnl = sum([safe_float(t.realized_pnl) for t in closed_trades])
             self.balance = INITIAL_BALANCE + total_pnl
             
             self.consecutive_losses = 0
             for t in sorted(closed_trades, key=lambda x: x.closed_at or datetime.min, reverse=True):
-                if t.realized_pnl and t.realized_pnl < 0:
+                pnl_val = safe_float(t.realized_pnl)
+                if pnl_val < 0:
                     self.consecutive_losses += 1
                 else:
                     break
@@ -62,8 +77,8 @@ class PortfolioEngine:
             
     def _update_metrics(self, db):
         closed_trades = db.query(Trade).filter(Trade.status == TradeStatus.CLOSED).all()
-        wins = [t.realized_pnl for t in closed_trades if t.realized_pnl and t.realized_pnl > 0]
-        losses = [t.realized_pnl for t in closed_trades if t.realized_pnl and t.realized_pnl <= 0]
+        wins = [safe_float(t.realized_pnl) for t in closed_trades if safe_float(t.realized_pnl) > 0]
+        losses = [safe_float(t.realized_pnl) for t in closed_trades if safe_float(t.realized_pnl) < 0]
         
         global_metrics["Orders Closed"] = len(closed_trades)
         
@@ -76,8 +91,8 @@ class PortfolioEngine:
         global_metrics["Profit Factor"] = (gross_profit / gross_loss) if gross_loss > 0 else (gross_profit if gross_profit > 0 else 0)
 
         # Drawdown calculation
-        peak_equity = max([INITIAL_BALANCE] + [INITIAL_BALANCE + sum([t.realized_pnl for t in closed_trades[:i]]) for i in range(1, len(closed_trades)+1)])
-        current_equity = self.balance
+        peak_equity = max([INITIAL_BALANCE] + [INITIAL_BALANCE + sum([safe_float(t.realized_pnl) for t in closed_trades[:i]]) for i in range(1, len(closed_trades)+1)])
+        current_equity = safe_float(self.balance)
         global_metrics["Current Drawdown"] = (peak_equity - current_equity) / peak_equity if peak_equity > 0 else 0.0
 
     def _check_watch_mode(self, db):
@@ -89,27 +104,34 @@ class PortfolioEngine:
             Trade.status == TradeStatus.CLOSED,
             Trade.closed_at >= start_of_day.replace(tzinfo=None)
         ).all()
-        daily_pnl = sum([t.realized_pnl for t in daily_trades if t.realized_pnl])
+        daily_pnl = sum([safe_float(t.realized_pnl) for t in daily_trades])
         
         weekly_trades = db.query(Trade).filter(
             Trade.status == TradeStatus.CLOSED,
             Trade.closed_at >= start_of_week.replace(tzinfo=None)
         ).all()
-        weekly_pnl = sum([t.realized_pnl for t in weekly_trades if t.realized_pnl])
+        weekly_pnl = sum([safe_float(t.realized_pnl) for t in weekly_trades])
         
         daily_dd = -daily_pnl / self.balance if daily_pnl < 0 else 0
         weekly_dd = -weekly_pnl / self.balance if weekly_pnl < 0 else 0
         
-        if daily_dd >= DAILY_DRAWDOWN_LIMIT or weekly_dd >= WEEKLY_DRAWDOWN_LIMIT or self.consecutive_losses >= MAX_CONSECUTIVE_LOSSES:
-            if not self.watch_mode:
-                logger.warning(f"⚠️ PORTFOLIO WATCH MODE ACTIVATED. Daily DD: {daily_dd:.2%}, Weekly DD: {weekly_dd:.2%}, Consecutive Losses: {self.consecutive_losses}")
-            self.watch_mode = True
-            os.environ["PORTFOLIO_CRITICAL_WATCH"] = "true"
+        from backend.config import FEATURE_FLAGS
+        if FEATURE_FLAGS.get("circuit_breaker_v2", True):
+            from backend.engines.risk import cb_manager
+            cb_manager.update_breakers(daily_dd, weekly_dd, self.consecutive_losses)
+            self.watch_mode = cb_manager.is_any_active()
+            os.environ["PORTFOLIO_CRITICAL_WATCH"] = "true" if self.watch_mode else "false"
         else:
-            if self.watch_mode:
-                logger.info("🟢 PORTFOLIO WATCH MODE DEACTIVATED.")
-            self.watch_mode = False
-            os.environ["PORTFOLIO_CRITICAL_WATCH"] = "false"
+            if daily_dd >= DAILY_DRAWDOWN_LIMIT or weekly_dd >= WEEKLY_DRAWDOWN_LIMIT or self.consecutive_losses >= MAX_CONSECUTIVE_LOSSES:
+                if not self.watch_mode:
+                    logger.warning(f"⚠️ PORTFOLIO WATCH MODE ACTIVATED. Daily DD: {daily_dd:.2%}, Weekly DD: {weekly_dd:.2%}, Consecutive Losses: {self.consecutive_losses}")
+                self.watch_mode = True
+                os.environ["PORTFOLIO_CRITICAL_WATCH"] = "true"
+            else:
+                if self.watch_mode:
+                    logger.info("🟢 PORTFOLIO WATCH MODE DEACTIVATED.")
+                self.watch_mode = False
+                os.environ["PORTFOLIO_CRITICAL_WATCH"] = "false"
 
     async def _track_metrics_events(self):
         # We just need to track the counters. Since event_bus.subscribe_group consumes, we use a different group name
@@ -166,7 +188,7 @@ class PortfolioEngine:
                         floating_pnl += pnl
                         margin_used += entry * lot * 0.1 
                 
-                equity = self.balance + floating_pnl
+                equity = safe_float(self.balance) + safe_float(floating_pnl)
                 global_metrics["Portfolio Exposure"] = margin_used
                 
                 now = datetime.now(timezone.utc)
@@ -175,22 +197,22 @@ class PortfolioEngine:
                 start_of_month = start_of_day.replace(day=1)
                 
                 closed = db.query(Trade).filter(Trade.status == TradeStatus.CLOSED).all()
-                daily_pnl = sum([t.realized_pnl for t in closed if t.realized_pnl and t.closed_at and t.closed_at >= start_of_day.replace(tzinfo=None)])
-                weekly_pnl = sum([t.realized_pnl for t in closed if t.realized_pnl and t.closed_at and t.closed_at >= start_of_week.replace(tzinfo=None)])
-                monthly_pnl = sum([t.realized_pnl for t in closed if t.realized_pnl and t.closed_at and t.closed_at >= start_of_month.replace(tzinfo=None)])
+                daily_pnl = sum([safe_float(t.realized_pnl) for t in closed if t.closed_at and t.closed_at >= start_of_day.replace(tzinfo=None)])
+                weekly_pnl = sum([safe_float(t.realized_pnl) for t in closed if t.closed_at and t.closed_at >= start_of_week.replace(tzinfo=None)])
+                monthly_pnl = sum([safe_float(t.realized_pnl) for t in closed if t.closed_at and t.closed_at >= start_of_month.replace(tzinfo=None)])
                 
-                peak_equity = max([INITIAL_BALANCE] + [self.balance])
+                peak_equity = max([INITIAL_BALANCE] + [safe_float(self.balance)])
                 drawdown = (peak_equity - equity) / peak_equity if peak_equity > 0 else 0.0
                 
                 snap_event = PortfolioSnapshotEvent(
-                    balance=self.balance,
-                    equity=equity,
-                    margin=margin_used,
-                    floating_pnl=floating_pnl,
-                    daily_pnl=daily_pnl,
-                    weekly_pnl=weekly_pnl,
-                    monthly_pnl=monthly_pnl,
-                    drawdown=drawdown
+                    balance=safe_float(self.balance),
+                    equity=safe_float(equity),
+                    margin=safe_float(margin_used),
+                    floating_pnl=safe_float(floating_pnl),
+                    daily_pnl=safe_float(daily_pnl),
+                    weekly_pnl=safe_float(weekly_pnl),
+                    monthly_pnl=safe_float(monthly_pnl),
+                    drawdown=safe_float(drawdown)
                 )
                 
                 await self.event_bus.publish(CH_PORTFOLIO_SNAPSHOT, snap_event.model_dump())
@@ -210,12 +232,13 @@ class PortfolioEngine:
 
     async def process_executions(self):
         logger.info("Portfolio Engine listening to Executions...")
+        from sqlalchemy.exc import SQLAlchemyError
         
         async def handle_opened():
             async for msg in self.event_bus.subscribe_group(CH_EXEC_OPENED, "portfolio_group", "portfolio_worker_1"):
+                db = SessionLocal()
                 try:
                     event = ExecutionEvent(**msg)
-                    db = SessionLocal()
                     
                     ledger = TradeLedger(
                         trade_id=event.trade_id,
@@ -225,38 +248,43 @@ class PortfolioEngine:
                     )
                     db.add(ledger)
                     db.commit()
-                    db.close()
                     
                     global_metrics["Orders Opened"] += 1
+                except SQLAlchemyError as e:
+                    db.rollback()
+                    logger.error(f"❌ DB Transaction failed in handle_opened: {e}")
                 except Exception as e:
                     logger.error(f"Error recording open trade: {e}")
+                finally:
+                    db.close()
 
         async def handle_closed():
             async for msg in self.event_bus.subscribe_group(CH_EXEC_CLOSED, "portfolio_group", "portfolio_worker_1"):
+                db = SessionLocal()
                 try:
                     event = ExecutionEvent(**msg)
-                    db = SessionLocal()
+                    pnl_val = safe_float(event.realized_pnl)
                     
                     ledger = TradeLedger(
                         trade_id=event.trade_id,
                         event_type="CLOSED",
-                        amount=event.realized_pnl,
-                        description=f"ปิดสัญญาเทรดเรียบร้อย สรุปกำไร/ขาดทุนสุทธิ (PnL): ${event.realized_pnl}"
+                        amount=pnl_val,
+                        description=f"ปิดสัญญาเทรดเรียบร้อย สรุปกำไร/ขาดทุนสุทธิ (PnL): ${pnl_val}"
                     )
                     db.add(ledger)
                     
-                    if event.realized_pnl and event.realized_pnl > 0:
+                    if pnl_val > 0:
                         tax = TaxLedger(
                             trade_id=event.trade_id,
                             tax_type="INCOME_TAX_EST",
-                            amount=event.realized_pnl * 0.20
+                            amount=pnl_val * 0.20
                         )
                         db.add(tax)
                         
                     db.commit()
                     
-                    self.balance += (event.realized_pnl or 0)
-                    if event.realized_pnl and event.realized_pnl < 0:
+                    self.balance += pnl_val
+                    if pnl_val < 0:
                         self.consecutive_losses += 1
                     else:
                         self.consecutive_losses = 0
@@ -264,10 +292,13 @@ class PortfolioEngine:
                     self._update_metrics(db)
                     self._check_watch_mode(db)
                     
-                    db.close()
-                    
+                except SQLAlchemyError as e:
+                    db.rollback()
+                    logger.error(f"❌ DB Transaction failed in handle_closed: {e}")
                 except Exception as e:
                     logger.error(f"Error recording closed trade: {e}")
+                finally:
+                    db.close()
 
         asyncio.create_task(handle_opened())
         asyncio.create_task(handle_closed())
