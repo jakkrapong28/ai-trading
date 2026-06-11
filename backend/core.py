@@ -617,24 +617,44 @@ def check_trade_risk(
     price: float,
     lot: float,
     stop_distance: float,
-    spread: float,
-    circuit_breaker_triggered: bool = False
+    spread: float,  # Spread Limit
+    circuit_breaker_triggered: bool = False,
+    take_profit: float = 40.0,
+    reject_threshold: float = 3.0,
+    risk_pct_limit: float = 1.5
 ) -> Dict[str, Any]:
     """ตรวจสอบกฎเหล็กบริหารความเสี่ยง 6 ประการ"""
     spec = SYMBOLS.get(symbol, SYMBOLS["XAUUSD"])
 
+    from backend.shared.database.core import SessionLocal
+    from backend.shared.database.models import Trade, TradeStatus
+    db = SessionLocal()
+    try:
+        closed_trades = db.query(Trade).filter(Trade.status == TradeStatus.CLOSED).all()
+        total_pnl = sum([t.realized_pnl for t in closed_trades if t.realized_pnl])
+        equity = 45750.00 + total_pnl
+    except Exception:
+        equity = 45750.00
+    finally:
+        db.close()
+
     contract_size = spec.get("contractSize", 100)
     risk_dollars = lot * stop_distance * contract_size
-    risk_pct = (risk_dollars / RISK_CONFIG["equity"]) * 100
+    risk_pct = (risk_dollars / equity) * 100
 
     exposure_dollars = lot * price * contract_size
-    exposure_pct = (exposure_dollars / RISK_CONFIG["equity"]) * 100
+    exposure_pct = (exposure_dollars / equity) * 100
+
+    # Simulate broker spread fluctuating between 1.5 and 3.2
+    import random
+    broker_spread = round(random.uniform(1.5, 3.2), 2)
 
     checks = [
         {"name": "มีสัญญาณซื้อขายหลัก (ไม่ใช่ WAIT)", "pass": bool(action in ["BUY", "SELL"])},
-        {"name": "ความเสี่ยงต่อไม้ไม่เกิน 2% (2% Rule)", "pass": bool(risk_pct <= RISK_CONFIG["maxRiskPerTradePct"])},
-        {"name": "มีจุดตัดขาดทุนขั้นต่ำ (Stop Loss > 10 pips)", "pass": bool(stop_distance >= RISK_CONFIG["minStopDistance"])},
-        {"name": "ค่าสเปรดไม่กว้างเกินเกณฑ์ (Spread Limit)", "pass": bool(spread <= RISK_CONFIG["maxSpread"])},
+        {"name": f"ความเสี่ยงต่อไม้ไม่เกิน {risk_pct_limit}% (ปัจจุบัน {risk_pct:.2f}%)", "pass": bool(risk_pct <= risk_pct_limit)},
+        {"name": f"มีจุดตัดขาดทุนขั้นต่ำ (Stop Loss >= 20.0 pips)", "pass": bool(stop_distance >= 20.0)},
+        {"name": f"ค่าสเปรดโบรกเกอร์ ({broker_spread}) ไม่เกินเกณฑ์ Spread Limit ({spread})", "pass": bool(broker_spread <= spread)},
+        {"name": f"ค่าสเปรดโบรกเกอร์ ({broker_spread}) ไม่เกินเกณฑ์ Reject เด็ดขาด ({reject_threshold})", "pass": bool(broker_spread <= reject_threshold)},
         {"name": "ขนาดพอร์ตถือครองรวมไม่เกิน 20% (Exposure Limit)", "pass": bool(exposure_pct <= RISK_CONFIG["maxOpenExposurePct"])},
         {"name": "สถานะระบบความปลอดภัย (Circuit Breaker ไม่ทำงาน)", "pass": bool(not circuit_breaker_triggered)}
     ]
@@ -646,7 +666,8 @@ def check_trade_risk(
         "checks": checks,
         "riskDollars": round(risk_dollars, 2),
         "riskPct": round(risk_pct, 2),
-        "exposurePct": round(exposure_pct, 2)
+        "exposurePct": round(exposure_pct, 2),
+        "brokerSpread": broker_spread
     }
 
 # ─────────────────────────────────────────────────────────

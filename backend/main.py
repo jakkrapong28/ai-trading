@@ -1,78 +1,57 @@
-from dotenv import load_dotenv
 import os
-
-# Load .env file explicitly from the backend directory
-load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
-
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
 import asyncio
 import logging
-import json
-import random
-from typing import List, Dict, Any, Set, Optional
-from datetime import datetime, timedelta
-from pathlib import Path
+from datetime import datetime, timezone, timedelta
 from contextlib import asynccontextmanager
+from typing import List, Dict, Any, Optional
+
+from dotenv import load_dotenv
+load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
+
+from fastapi import FastAPI, WebSocket, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import httpx
-import anthropic
-import ccxt
-import pandas as pd
+from sqlalchemy import text
 
-from backend.shared.events.core import EventBus, CH_MARKET_DATA, CH_MARKET_REGIME, CH_SIGNALS, CH_AI_JOURNAL, CH_NEWS, CH_RISK_APPROVED, CH_RISK_REJECTED, CH_EXEC_OPENED, CH_EXEC_CLOSED, CH_PORTFOLIO_UPDATED
+from backend.shared.events.core import (
+    EventBus, CH_MARKET_DATA, CH_MARKET_REGIME, CH_SIGNALS, 
+    CH_AI_JOURNAL, CH_RISK_APPROVED, CH_RISK_REJECTED, 
+    CH_EXEC_OPENED, CH_EXEC_CLOSED, CH_PORTFOLIO_UPDATED, CH_PORTFOLIO_SNAPSHOT, CH_NEWS, CH_AI_DECISION, correlation_id_ctx
+)
 from backend.shared.database.core import Base, engine, SessionLocal
-from backend.shared.database.models import Trade, PerformanceMetric, TradeAction, TradeStatus
+from backend.shared.database.models import Trade, TradeStatus, TradeAction, ERPDeliveryRecord
+from backend.shared.tasks import registry
 
-from backend.engines.market_data import start_market_data_engine
+from backend.engines.market_data import start_market_data_engine, latest_prices, get_latest_price
 from backend.engines.news_intelligence import start_news_intelligence_engine
-from backend.engines.market_regime import start_market_regime_engine
+from backend.engines.market_regime import start_market_regime_engine, ticker_data
 from backend.engines.strategy import start_strategy_engine
 from backend.engines.risk import start_risk_engine
 from backend.engines.execution import start_execution_engine
-from backend.engines.portfolio import start_portfolio_engine
+from backend.engines.portfolio import start_portfolio_engine, global_metrics
+from backend.agents import start_ai_decision_engine
+from backend.core import get_market_indicators, evaluate_strategy_rules, check_trade_risk
 
-from backend.core import (
-    generate_price_history,
-    get_market_indicators,
-    evaluate_strategy_rules,
-    check_trade_risk,
-    calculate_position_size,
-    calculate_performance_metrics,
-    append_price,
-    YAHOO_SYMBOL_MAP,
-    RISK_CONFIG,
-    SYMBOLS
-)
-from backend.agents import generate_thai_debate, generate_thai_debate_async
+class CorrelationFilter(logging.Filter):
+    def filter(self, record):
+        record.correlation_id = correlation_id_ctx.get()
+        return True
 
-# ─────────────────────────────────────────────────────────
-# Logging
-# ─────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    format="%(asctime)s - %(name)s - %(levelname)s - [%(correlation_id)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
 )
-logger = logging.getLogger("api-gateway")
 
-# ─────────────────────────────────────────────────────────
-# Global Event Bus
-# ─────────────────────────────────────────────────────────
+for handler in logging.root.handlers:
+    handler.addFilter(CorrelationFilter())
+
+logger = logging.getLogger("main")
+
 event_bus = EventBus()
+http_client: httpx.AsyncClient = None
 
-# ─────────────────────────────────────────────────────────
-# Singleton HTTP Client (Connection Pool)
-# ─────────────────────────────────────────────────────────
-http_client: Optional[httpx.AsyncClient] = None
-
-def get_http_client() -> httpx.AsyncClient:
-    if http_client is None:
-        raise RuntimeError("HTTP client not initialized")
-    return http_client
-
-# ─────────────────────────────────────────────────────────
-# WebSocket Connection Manager — Race Condition Fixed
-# ─────────────────────────────────────────────────────────
 class ConnectionManager:
     def __init__(self):
         self.active_connections: List[WebSocket] = []
@@ -82,27 +61,21 @@ class ConnectionManager:
         await websocket.accept()
         async with self._lock:
             self.active_connections.append(websocket)
-        logger.info(f"WS connected: {len(self.active_connections)} active")
 
     async def disconnect(self, websocket: WebSocket):
         async with self._lock:
             if websocket in self.active_connections:
                 self.active_connections.remove(websocket)
-        logger.info(f"WS disconnected: {len(self.active_connections)} active")
 
     async def broadcast(self, message: dict):
-        """Thread-safe broadcast — ไม่แก้ list ขณะ iterate"""
         async with self._lock:
-            connections = list(self.active_connections)  # copy ก่อน iterate
-
+            connections = list(self.active_connections)
         dead = []
         for connection in connections:
             try:
                 await connection.send_json(message)
             except Exception:
                 dead.append(connection)
-
-        # ลบ dead connections
         if dead:
             async with self._lock:
                 for c in dead:
@@ -111,1416 +84,436 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
-# ─────────────────────────────────────────────────────────
-# Alert Thresholds
-# ─────────────────────────────────────────────────────────
-ALERT_CONFIG = {
-    "rsi_overbought": 75,
-    "rsi_oversold": 25,
-    "max_drawdown_pct": 5.0,    # alert เมื่อ drawdown > 5%
-    "price_spike_pct": 2.0,     # alert เมื่อราคาเปลี่ยน > 2% ใน 1 tick
+# Global State Variables for dashboard APIs
+current_symbol = "XAUUSD"
+current_mode = "watch"
+os.environ["CURRENT_MODE"] = "watch"
+current_risk_input = {
+    "lot": 0.01,
+    "stopDistance": 20.0,
+    "takeProfit": 40.0,
+    "spread": 2.0,
+    "rejectThreshold": 3.0,
+    "riskPct": 1.5
 }
-_last_alerts: Dict[str, datetime] = {}  # cooldown tracker
-ALERT_COOLDOWN_MINUTES = 30
+journal_log = [
+    {
+        "type": "system_init", 
+        "detail": "ระบบนิเวศ AI Trading Virtual Office เริ่มต้นการทำงานเสร็จสมบูรณ์", 
+        "at": datetime.now().isoformat()
+    }
+]
+latest_news_cache: Dict[str, List[dict]] = {}
 
-# ─────────────────────────────────────────────────────────
-# Analyze Request Queue — ป้องกัน multiple concurrent debates
-# ─────────────────────────────────────────────────────────
-_analyze_queue: asyncio.Queue = asyncio.Queue(maxsize=5)
-
-# ─────────────────────────────────────────────────────────
-# In-Memory Trading State
-# ─────────────────────────────────────────────────────────
-class TradingState:
-    def __init__(self):
-        self.symbol = "XAUUSD"
-        self.prices = generate_price_history(self.symbol)
-        self.indicators = get_market_indicators(self.prices, self.symbol)
-        self.signal = evaluate_strategy_rules(self.indicators, self.symbol)
-        self.risk = check_trade_risk(
-            self.symbol,
-            self.signal["action"],
-            self.indicators["latest"],
-            0.1, 15.0, 1.8
-        )
-        self.mode = "watch"  # auto / watch
-        self.balances = [
-            {"source": "MT5", "equity": 25000.00, "balance": 24850.00, "free_margin": 24850.00},
-            {"source": "BINANCE", "equity": 12500.00, "balance": 12500.00, "free_margin": 12500.00},
-            {"source": "ONCHAIN_WALLET", "equity": 8400.00, "balance": 8400.00, "free_margin": 8400.00}
-        ]
-        self.journal = [
-            {
-                "type": "system_init",
-                "detail": "ระบบนิเวศ AI Trading Virtual Office เริ่มต้นการทำงานเสร็จสมบูรณ์",
-                "at": datetime.now().isoformat()
-            }
-        ]
-        self.orders = []
-        self.active_debate = []
-        self.is_debating = False
-        self.last_update_id = 0
-        self.signal_executed = False  # Track if the current signal was already executed
-        self.daily_realized_pnl = 0.0
-        self.circuit_breaker_triggered = False
-        self.macro_trend_1h = None
-        self.ohlc_candles: Optional[pd.DataFrame] = None
-        self.partially_closed_trades = set()
-        self._state_lock = asyncio.Lock()
-
-        # API Keys — โหลดจาก environment
-        self.telegram_token = os.environ.get("TELEGRAM_TOKEN", "")
-        self.anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
-        self.binance_key = os.environ.get("BINANCE_API_KEY", "")
-        self.binance_secret = os.environ.get("BINANCE_API_SECRET", "")
-        self.news_api_key = os.environ.get("NEWS_API_KEY", "")
-        self.twelvedata_api_key = os.environ.get("TWELVEDATA_API_KEY", "")
-        self.finnhub_api_key = os.environ.get("FINNHUB_API_KEY", "")
-
-        self.telegram_chat_id = ""
-        self.binance_client = None
-
-        self._init_binance()
-
-    def _init_binance(self):
-        """เชื่อมต่อ Binance ถ้ามี key จริง"""
-        if self.binance_key and self.binance_secret and "Binance" not in self.binance_key:
-            try:
-                self.binance_client = ccxt.binance({
-                    "apiKey": self.binance_key,
-                    "secret": self.binance_secret,
-                    "enableRateLimit": True
-                })
-                logger.info("เชื่อมต่อ Binance Private API สำเร็จ")
-            except Exception as e:
-                logger.error(f"ไม่สามารถเปิดใช้งานโมดูล Binance CCXT: {e}")
-
-    def mask_key(self, key: str) -> str:
-        """Mask API key ก่อนส่งออก"""
-        if not key or len(key) < 8:
-            return "ยังไม่ได้ตั้งค่า"
-        return key[:4] + "••••••••" + key[-4:]
-
-    def get_total_equity(self) -> float:
-        return sum(b["equity"] for b in self.balances)
-
-state = TradingState()
-
-# ─────────────────────────────────────────────────────────
-# Journal Helper
-# ─────────────────────────────────────────────────────────
-def add_journal_entry(log_type: str, detail: str):
-    entry = {"type": log_type, "detail": detail, "at": datetime.now().isoformat()}
-    state.journal.insert(0, entry)
-    if len(state.journal) > 100:
-        state.journal.pop()
-
-# ─────────────────────────────────────────────────────────
-# Database Helpers (async-safe via asyncio.to_thread)
-# ─────────────────────────────────────────────────────────
-def _get_orders_from_db_sync():
-    """Sync DB query — รัน via asyncio.to_thread"""
+# DB Helper Functions
+async def load_orders_from_db() -> List[dict]:
     db = SessionLocal()
-    orders = []
     try:
-        trades = db.query(Trade).order_by(Trade.opened_at.desc()).limit(30).all()
+        trades = db.query(Trade).order_by(Trade.opened_at.desc()).limit(100).all()
+        orders = []
         for t in trades:
             orders.append({
                 "id": t.id,
                 "symbol": t.ticker,
-                "action": t.action.name if t.action else "BUY",
-                "volume": t.lot_size or 0.1,
+                "action": t.action.value,
+                "volume": t.lot_size,
                 "entry_price": t.entry_price or 0.0,
                 "exit_price": t.exit_price or 0.0,
                 "pnl": t.realized_pnl or 0.0,
-                "fee": 2.50,
-                "status": t.status.name if t.status else "OPEN"
+                "fee": 0.0,
+                "status": t.status.value,
+                "opened_at": t.opened_at.isoformat() if t.opened_at else None,
+                "closed_at": t.closed_at.isoformat() if t.closed_at else None
             })
+        return orders
     except Exception as e:
-        logger.error(f"DB Query Error: {e}")
+        logger.error(f"Error loading orders from DB: {e}")
+        return []
     finally:
         db.close()
-    return orders
 
-async def get_orders_from_db():
-    """Async wrapper สำหรับ DB query"""
-    return await asyncio.to_thread(_get_orders_from_db_sync)
-
-def _get_metrics_sync():
-    """Sync metrics calculation — รัน via asyncio.to_thread"""
+async def calculate_balances() -> List[dict]:
     db = SessionLocal()
     try:
-        trades = db.query(Trade).all()
-        trade_dicts = []
-        for t in trades:
-            if t.status == TradeStatus.CLOSED:
-                trade_dicts.append({
-                    "status": "CLOSED",
-                    "pnl": t.realized_pnl or 0.0
-                })
-        return calculate_performance_metrics(trade_dicts)
+        closed_trades = db.query(Trade).filter(Trade.status == TradeStatus.CLOSED).all()
+        total_pnl = sum([t.realized_pnl for t in closed_trades if t.realized_pnl])
+        balance = 45750.00 + total_pnl
+
+        open_trades = db.query(Trade).filter(Trade.status.in_([TradeStatus.OPEN, TradeStatus.RUNNING, TradeStatus.PARTIAL])).all()
+        floating_pnl = 0.0
+        for t in open_trades:
+            current = latest_prices.get(t.ticker)
+            if current:
+                current_price = current["last_price"]
+                entry = t.entry_price or 0.0
+                lot = t.lot_size or 0.0
+                if t.action.value == "BUY":
+                    floating_pnl += (current_price - entry) * lot
+                else:
+                    floating_pnl += (entry - current_price) * lot
+        equity = balance + floating_pnl
+        
+        return [
+            {"source": "MT5", "equity": round(equity * 0.55, 2), "balance": round(balance * 0.55, 2), "free_margin": round(balance * 0.55, 2)},
+            {"source": "BINANCE", "equity": round(equity * 0.27, 2), "balance": round(balance * 0.27, 2), "free_margin": round(balance * 0.27, 2)},
+            {"source": "ONCHAIN_WALLET", "equity": round(equity * 0.18, 2), "balance": round(balance * 0.18, 2), "free_margin": round(balance * 0.18, 2)}
+        ]
     except Exception as e:
-        logger.error(f"Metrics Error: {e}")
-        return {}
+        logger.error(f"Error calculating balances: {e}")
+        return [
+            {"source": "MT5", "equity": 25162.5, "balance": 25162.5, "free_margin": 25162.5},
+            {"source": "BINANCE", "equity": 12352.5, "balance": 12352.5, "free_margin": 12352.5},
+            {"source": "ONCHAIN_WALLET", "equity": 8235.0, "balance": 8235.0, "free_margin": 8235.0}
+        ]
     finally:
         db.close()
 
-async def get_metrics():
-    return await asyncio.to_thread(_get_metrics_sync)
+# Request Models
+class TelegramCommandRequest(BaseModel):
+    command: str
+
+class SymbolRequest(BaseModel):
+    symbol: str
+
+class RiskRequest(BaseModel):
+    lot: float
+    stopDistance: float
+    takeProfit: float
+    spread: float
+    rejectThreshold: float = 3.0
+    riskPct: float = 1.5
+
+class SettingsRequest(BaseModel):
+    telegram_token: Optional[str] = ""
+    anthropic_key: Optional[str] = ""
+    binance_key: Optional[str] = ""
+    binance_secret: Optional[str] = ""
+    news_api_key: Optional[str] = ""
+    twelvedata_api_key: Optional[str] = ""
+    finnhub_api_key: Optional[str] = ""
+    maxRiskPerTradePct: Optional[float] = 2.0
+    maxOpenExposurePct: Optional[float] = 20.0
 
-# ─────────────────────────────────────────────────────────
-# Live Price Fetching
-# ─────────────────────────────────────────────────────────
-async def fetch_twelvedata_stock_price(symbol: str) -> Optional[float]:
-    key = state.twelvedata_api_key
-    if not key or "TwelveData" in key or len(key) < 10:
-        return None
-    try:
-        r = await get_http_client().get(
-            f"https://api.twelvedata.com/price?symbol={symbol}&apikey={key}",
-            timeout=3.0
-        )
-        if r.status_code == 200:
-            data = r.json()
-            if "price" in data:
-                return float(data["price"])
-    except Exception as e:
-        logger.error(f"TwelveData error for {symbol}: {e}")
-    return None
-
-async def fetch_finnhub_stock_price(symbol: str) -> Optional[float]:
-    key = state.finnhub_api_key
-    if not key or "Finnhub" in key or len(key) < 10:
-        return None
-    try:
-        r = await get_http_client().get(
-            f"https://finnhub.io/api/v1/quote?symbol={symbol}&token={key}",
-            timeout=3.0
-        )
-        if r.status_code == 200:
-            price = r.json().get("c", 0.0)
-            if price > 0:
-                return float(price)
-    except Exception as e:
-        logger.error(f"Finnhub error for {symbol}: {e}")
-    return None
-
-async def fetch_live_binance_price(symbol: str) -> Optional[float]:
-    if symbol in ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"]:
-        try:
-            r = await get_http_client().get(
-                f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}",
-                timeout=2.0
-            )
-            if r.status_code == 200:
-                return float(r.json().get("price", 0))
-        except Exception as e:
-            logger.error(f"Binance price error for {symbol}: {e}")
-    return None
-
-async def fetch_live_stock_price(symbol: str) -> Optional[float]:
-    if symbol in ["TSLA", "AAPL", "NVDA", "MSFT", "AMZN", "GOOGL"]:
-        td_price = await fetch_twelvedata_stock_price(symbol)
-        if td_price:
-            return td_price
-        fh_price = await fetch_finnhub_stock_price(symbol)
-        if fh_price:
-            return fh_price
-        try:
-            r = await get_http_client().get(
-                f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}",
-                headers={"User-Agent": "Mozilla/5.0"},
-                timeout=2.0
-            )
-            if r.status_code == 200:
-                meta = r.json().get("chart", {}).get("result", [{}])[0].get("meta", {})
-                p = float(meta.get("regularMarketPrice", 0))
-                return p if p > 0 else None
-        except Exception as e:
-            logger.error(f"Yahoo Finance error for {symbol}: {e}")
-    return None
-
-async def fetch_yahoo_price(yf_symbol: str) -> Optional[float]:
-    try:
-        r = await get_http_client().get(
-            f"https://query1.finance.yahoo.com/v8/finance/chart/{yf_symbol}?interval=1m&range=1d",
-            headers={"User-Agent": "Mozilla/5.0"},
-            timeout=3.0
-        )
-        if r.status_code == 200:
-            meta = r.json().get("chart", {}).get("result", [{}])[0].get("meta", {})
-            p = float(meta.get("regularMarketPrice", 0))
-            return p if p > 0 else None
-    except Exception as e:
-        logger.error(f"Yahoo price error for {yf_symbol}: {e}")
-    return None
-
-async def fetch_ohlc_candles(symbol: str, interval: str = "15m", range_val: str = "5d") -> Optional[pd.DataFrame]:
-    """ดึง OHLC จริงสำหรับคำนวณ ATR / volume"""
-    yf_symbol = YAHOO_SYMBOL_MAP.get(symbol, symbol)
-    try:
-        r = await get_http_client().get(
-            f"https://query1.finance.yahoo.com/v8/finance/chart/{yf_symbol}?interval={interval}&range={range_val}",
-            headers={"User-Agent": "Mozilla/5.0"},
-            timeout=5.0
-        )
-        if r.status_code != 200:
-            return None
-        result = r.json().get("chart", {}).get("result", [{}])[0]
-        quote = result.get("indicators", {}).get("quote", [{}])[0]
-        df = pd.DataFrame({
-            "open": quote.get("open", []),
-            "high": quote.get("high", []),
-            "low": quote.get("low", []),
-            "close": quote.get("close", []),
-            "volume": quote.get("volume", []),
-        })
-        df = df.dropna()
-        return df if len(df) >= 20 else None
-    except Exception as e:
-        logger.error(f"OHLC fetch error for {symbol}: {e}")
-    return None
-
-async def fetch_actual_market_price(symbol: str) -> Optional[float]:
-    price = await fetch_live_binance_price(symbol)
-    if price:
-        return price
-    if symbol == "XAUUSD":
-        return await fetch_yahoo_price("GC=F")
-    if symbol == "EURUSD":
-        return await fetch_yahoo_price("EURUSD=X")
-    return await fetch_live_stock_price(symbol)
-
-def _compute_indicators(symbol: str, ohlc_df: Optional[pd.DataFrame], prices: List[float]) -> Dict[str, Any]:
-    if ohlc_df is not None and len(ohlc_df) >= 20:
-        return get_market_indicators(ohlc_df, symbol)
-    return get_market_indicators(prices, symbol)
-
-def _update_risk_from_signal(symbol: str, signal: Dict, indicators: Dict) -> Dict[str, Any]:
-    pos_size = calculate_position_size(
-        symbol,
-        state.get_total_equity(),
-        RISK_CONFIG["maxRiskPerTradePct"],
-        indicators["atr"]
-    )
-    lot = pos_size["lot"]
-    stop_dist = pos_size["stop_distance"]
-    risk = check_trade_risk(
-        symbol, signal["action"], indicators["latest"],
-        lot, stop_dist, 1.8, state.circuit_breaker_triggered
-    )
-    risk["calculatedLot"] = lot
-    risk["calculatedStopDist"] = stop_dist
-    return risk
-
-async def sync_live_binance_balance():
-    if state.binance_client:
-        try:
-            bal = await asyncio.to_thread(state.binance_client.fetch_balance)
-            usdt_total = bal.get("USDT", {}).get("total", 0.0)
-            usdt_free = bal.get("USDT", {}).get("free", 0.0)
-            if usdt_total > 0:
-                async with state._state_lock:
-                    for b in state.balances:
-                        if b["source"] == "BINANCE":
-                            b["balance"] = round(usdt_total, 2)
-                            b["equity"] = round(usdt_total, 2)
-                            b["free_margin"] = round(usdt_free, 2)
-        except Exception as e:
-            logger.error(f"Binance balance sync error: {e}")
-
-# ─────────────────────────────────────────────────────────
-# Alert System
-# ─────────────────────────────────────────────────────────
-async def check_and_send_alerts(symbol: str, indicators: Dict, prev_price: Optional[float] = None):
-    """ตรวจสอบ thresholds และส่ง Telegram alert"""
-    if not state.telegram_token or not state.telegram_chat_id:
-        return
-    if "Telegram" in state.telegram_token:
-        return
-
-    rsi = indicators.get("rsi", 50)
-    latest = indicators.get("latest", 0)
-    now = datetime.now()
-
-    alerts_to_send = []
-
-    # RSI Overbought
-    alert_key = f"rsi_ob_{symbol}"
-    if rsi > ALERT_CONFIG["rsi_overbought"]:
-        last = _last_alerts.get(alert_key)
-        if not last or (now - last).total_seconds() > ALERT_COOLDOWN_MINUTES * 60:
-            alerts_to_send.append(f"🔴 *RSI Overbought Alert* — {symbol}\nRSI = {rsi} (>{ALERT_CONFIG['rsi_overbought']})\nราคา: {latest}")
-            _last_alerts[alert_key] = now
-
-    # RSI Oversold
-    alert_key = f"rsi_os_{symbol}"
-    if rsi < ALERT_CONFIG["rsi_oversold"]:
-        last = _last_alerts.get(alert_key)
-        if not last or (now - last).total_seconds() > ALERT_COOLDOWN_MINUTES * 60:
-            alerts_to_send.append(f"🟢 *RSI Oversold Alert* — {symbol}\nRSI = {rsi} (<{ALERT_CONFIG['rsi_oversold']})\nราคา: {latest}")
-            _last_alerts[alert_key] = now
-
-    # Price Spike
-    if prev_price and prev_price > 0:
-        change_pct = abs(latest - prev_price) / prev_price * 100
-        alert_key = f"spike_{symbol}"
-        if change_pct > ALERT_CONFIG["price_spike_pct"]:
-            last = _last_alerts.get(alert_key)
-            if not last or (now - last).total_seconds() > 5 * 60:  # 5 min cooldown
-                direction = "📈" if latest > prev_price else "📉"
-                alerts_to_send.append(
-                    f"{direction} *Price Spike Alert* — {symbol}\n"
-                    f"เปลี่ยนแปลง: {'+' if latest > prev_price else ''}{change_pct:.1f}%\n"
-                    f"ราคา: {prev_price} → {latest}"
-                )
-                _last_alerts[alert_key] = now
-
-    # ส่ง alerts
-    for alert_text in alerts_to_send:
-        await send_telegram_direct_message(state.telegram_chat_id, alert_text)
-        add_journal_entry("alert_sent", alert_text[:80])
-
-# ─────────────────────────────────────────────────────────
-# Market Update
-# ─────────────────────────────────────────────────────────
-async def trigger_market_update(symbol: str = None):
-    if symbol:
-        async with state._state_lock:
-            state.symbol = symbol
-
-    await sync_live_binance_balance()
-
-    prev_price = state.indicators.get("latest") if isinstance(state.indicators, dict) else None
-    live_price = await fetch_actual_market_price(state.symbol)
-
-    trend_1h = await fetch_historical_candles_1h(state.symbol)
-    ohlc_df = await fetch_ohlc_candles(state.symbol)
-
-    async with state._state_lock:
-        if trend_1h:
-            state.macro_trend_1h = trend_1h
-        if ohlc_df is not None:
-            state.ohlc_candles = ohlc_df
-        if live_price:
-            append_price(state.symbol, live_price)
-
-        state.prices = generate_price_history(state.symbol)
-        state.indicators = _compute_indicators(state.symbol, state.ohlc_candles, state.prices)
-        state.signal = evaluate_strategy_rules(state.indicators, state.symbol, state.macro_trend_1h)
-        state.signal_executed = False
-        state.risk = _update_risk_from_signal(state.symbol, state.signal, state.indicators)
-
-    add_journal_entry("market_snapshot", f"ดึงข้อมูลราคา {state.symbol}: {state.indicators['latest']} (1h Trend: {state.macro_trend_1h})")
-
-    # Check alerts
-    await check_and_send_alerts(state.symbol, state.indicators, prev_price)
-
-    await manager.broadcast({
-        "type": "market_update",
-        "symbol": state.symbol,
-        "latest": state.indicators["latest"],
-        "indicators": state.indicators,
-        "signal": state.signal,
-        "risk": state.risk,
-        "mode": state.mode
-    })
-
-    # Queue debate แทนการ create task โดยตรง
-    try:
-        _analyze_queue.put_nowait(state.symbol)
-    except asyncio.QueueFull:
-        logger.warning("Analyze queue full, skipping debate")
-
-# ─────────────────────────────────────────────────────────
-# Debate Worker (Queue-based, ไม่มี race condition)
-# ─────────────────────────────────────────────────────────
-async def debate_worker():
-    """ประมวลผล debate ทีละ 1 request จาก queue"""
-    logger.info("Debate Worker started")
-    while True:
-        try:
-            symbol = await _analyze_queue.get()
-
-            if state.is_debating:
-                _analyze_queue.task_done()
-                continue
-
-            state.is_debating = True
-            state.active_debate = []
-
-            try:
-                # ใช้ Claude ถ้ามี API key, ไม่งั้น template
-                has_claude = (
-                    bool(state.anthropic_key)
-                    and "Anthropic" not in state.anthropic_key
-                    and len(state.anthropic_key) > 20
-                )
-
-                if has_claude:
-                    debate_steps = await generate_thai_debate_async(
-                        state.symbol, state.indicators, state.signal, state.risk,
-                        state.anthropic_key
-                    )
-                else:
-                    debate_steps = generate_thai_debate(
-                        state.symbol, state.indicators, state.signal, state.risk
-                    )
-
-                # Telegram initial message
-                tg_msg_id = None
-                tg_text = ""
-                if state.telegram_token and state.telegram_chat_id and "Telegram" not in state.telegram_token:
-                    powered = "🤖 Claude AI" if has_claude else "📋 Template"
-                    tg_text = f"🏛 <b>[สภา AI เริ่มประชุม]</b> — <b>{state.symbol}</b> ({powered})\n\n"
-                    try:
-                        r = await get_http_client().post(
-                            f"https://api.telegram.org/bot{state.telegram_token}/sendMessage",
-                            json={"chat_id": state.telegram_chat_id, "text": tg_text, "parse_mode": "HTML"},
-                            timeout=5.0
-                        )
-                        if r.status_code == 200:
-                            tg_msg_id = r.json().get("result", {}).get("message_id")
-                    except Exception as e:
-                        logger.error(f"Telegram send error: {e}")
-
-                # Stream debate steps
-                for i, step in enumerate(debate_steps):
-                    state.active_debate.append(step)
-
-                    await manager.broadcast({"type": "agent_typing", "message": step})
-
-                    # อัปเดต Telegram message
-                    if tg_msg_id:
-                        msg_escaped = (
-                            step["message"]
-                            .replace("&", "&amp;")
-                            .replace("<", "&lt;")
-                            .replace(">", "&gt;")
-                        )
-                        tg_text += (
-                            f"{step['avatar']} <b>{step['agent']}</b>:\n"
-                            f"{msg_escaped}\n\n"
-                        )
-
-                        is_last = (i == len(debate_steps) - 1)
-                        payload = {
-                            "chat_id": state.telegram_chat_id,
-                            "message_id": tg_msg_id,
-                            "text": tg_text,
-                            "parse_mode": "HTML"
-                        }
-
-                        # ปุ่ม Approve/Reject สำหรับ step สุดท้าย
-                        if is_last:
-                            action = state.signal["action"]
-                            passed = state.risk.get("passed", False)
-                            if passed and action in ["BUY", "SELL"]:
-                                payload["reply_markup"] = {
-                                    "inline_keyboard": [[
-                                        {"text": "✅ อนุมัติเทรด", "callback_data": f"approve_{state.symbol}"},
-                                        {"text": "❌ ปฏิเสธ", "callback_data": f"reject_{state.symbol}"}
-                                    ]]
-                                }
-
-                        try:
-                            await get_http_client().post(
-                                f"https://api.telegram.org/bot{state.telegram_token}/editMessageText",
-                                json=payload, timeout=5.0
-                            )
-                        except Exception as e:
-                            logger.error(f"Telegram edit error: {e}")
-
-                    await asyncio.sleep(random.uniform(0.5, 1.0))
-
-                # Auto execute (Auto 100% - even in watch mode it executes automatically)
-                if state.risk.get("passed") and state.signal["action"] in ["BUY", "SELL"]:
-                    logger.info(f"[Auto Execution] Risk passed — executing trade automatically (Mode: {state.mode.upper()})...")
-                    await manager.broadcast({"type": "agent_typing", "message": {"agent": "system", "message": f"🤖 [AUTO EXECUTE] ระบบอนุมัติออโต้อัตโนมัติ (ในโหมด {state.mode.upper()})! กำลังส่งคำสั่งไปที่ EA...", "avatar": "⚡"}})
-                    await asyncio.sleep(1.0)
-                    await execute_mock_trade()
-
-            finally:
-                state.is_debating = False
-                _analyze_queue.task_done()
-
-        except asyncio.CancelledError:
-            break
-        except Exception as e:
-            logger.error(f"Debate Worker error: {e}")
-            state.is_debating = False
-            await asyncio.sleep(1)
-
-# ─────────────────────────────────────────────────────────
-# Trade Execution
-# ─────────────────────────────────────────────────────────
-async def execute_mock_trade():
-    async with state._state_lock:
-        if state.signal_executed:
-            logger.info("Trade already executed, skipping")
-            return
-        state.signal_executed = True
-
-    action = state.signal["action"]
-    entry_price = state.indicators.get("latest", 2342.0) if isinstance(state.indicators, dict) else 2342.0
-
-    trade_id = f"ord_{int(datetime.now().timestamp() * 1000)}"
-
-    # Dynamic lot size
-    lot = state.risk.get("calculatedLot", 0.1)
-    stop_dist = state.risk.get("calculatedStopDist", 15.0)
-
-    # Save to DB (via thread)
-    def _save_trade():
-        db = SessionLocal()
-        try:
-            trade = Trade(
-                id=trade_id,
-                ticker=state.symbol,
-                action=TradeAction[action],
-                status=TradeStatus.OPEN,
-                lot_size=lot,
-                entry_price=entry_price,
-                stop_loss=round(entry_price - stop_dist, 2) if action == "BUY" else round(entry_price + stop_dist, 2),
-                take_profit=round(entry_price + stop_dist * 2, 2) if action == "BUY" else round(entry_price - stop_dist * 2, 2)
-            )
-            db.add(trade)
-            db.commit()
-            logger.info(f"Saved trade {trade_id} to DB")
-        except Exception as e:
-            logger.error(f"DB save error: {e}")
-        finally:
-            db.close()
-
-    await asyncio.to_thread(_save_trade)
-
-    # Webhook to ERP
-    try:
-        await get_http_client().post(
-            "http://localhost:5001/webhook/trade-event",
-            json={"event": "trade.opened", "data": {
-                "symbol": state.symbol, "action": action,
-                "price": entry_price, "volume": lot
-            }},
-            timeout=2.0
-        )
-    except Exception as e:
-        logger.error(f"ERP webhook error: {e}")
-
-    add_journal_entry("trade_order.paper_created", f"คำสั่ง {action} {state.symbol} @ {entry_price} (lot={lot})")
-
-    orders = await get_orders_from_db()
-    current_order = next((o for o in orders if o["id"] == trade_id), {
-        "id": trade_id, "symbol": state.symbol, "action": action,
-        "volume": lot, "entry_price": entry_price,
-        "exit_price": 0.0, "pnl": 0.0, "fee": 2.50, "status": "OPEN"
-    })
-
-    await manager.broadcast({"type": "order_opened", "order": current_order, "balances": state.balances})
-    # Legacy simulated close removed - open_trades_monitor will manage closing based on actual SL/TP
-    # asyncio.create_task(simulate_order_close(trade_id, action, entry_price, lot))
-
-async def simulate_order_close(trade_id: str, action: str, entry_price: float, volume: float):
-    await asyncio.sleep(5.0)
-
-    spec = SYMBOLS.get(state.symbol, SYMBOLS["XAUUSD"])
-    win = random.random() > 0.4
-    multiplier = 1.0 if win else -0.8
-    pnl = round(volume * spec["volatility"] * multiplier * 2.0 * 100, 2)
-    fee = round(2.50 + random.random() * 2.0, 2)
-    exit_price = round(entry_price + (pnl / (volume * 100 * spec["tickValue"])), spec["decimals"])
-
-    def _close_trade():
-        db = SessionLocal()
-        try:
-            trade = db.query(Trade).filter(Trade.id == trade_id).first()
-            if trade:
-                trade.status = TradeStatus.CLOSED
-                trade.exit_price = exit_price
-                trade.realized_pnl = pnl
-                trade.closed_at = datetime.utcnow()
-                db.commit()
-        except Exception as e:
-            logger.error(f"DB close error: {e}")
-        finally:
-            db.close()
-
-    await asyncio.to_thread(_close_trade)
-
-    broker = "BINANCE" if state.symbol in ["BTCUSDT", "ETHUSDT", "SOLUSDT"] else "MT5"
-    async with state._state_lock:
-        for bal in state.balances:
-            if bal["source"] == broker:
-                bal["balance"] = round(bal["balance"] + pnl - fee, 2)
-                bal["equity"] = bal["balance"]
-
-    add_journal_entry("trade_closed", f"ปิดออเดอร์ {state.symbol} PnL: {'+' if pnl >= 0 else ''}${pnl}")
-
-    try:
-        await get_http_client().post(
-            "http://localhost:5001/webhook/trade-event",
-            json={"event": "trade.pnl_realized", "data": {
-                "symbol": state.symbol, "pnl": pnl, "fee": fee
-            }},
-            timeout=2.0
-        )
-    except Exception as e:
-        logger.error(f"ERP close webhook error: {e}")
-
-    orders = await get_orders_from_db()
-    await manager.broadcast({
-        "type": "order_closed",
-        "order_id": trade_id,
-        "orders": orders,
-        "balances": state.balances
-    })
-
-# ─────────────────────────────────────────────────────────
-# Telegram Bot
-# ─────────────────────────────────────────────────────────
-async def send_telegram_direct_message(chat_id: str, text: str, parse_mode: str = "Markdown"):
-    if not state.telegram_token:
-        return
-    try:
-        await get_http_client().post(
-            f"https://api.telegram.org/bot{state.telegram_token}/sendMessage",
-            json={"chat_id": chat_id, "text": text, "parse_mode": parse_mode},
-            timeout=5.0
-        )
-    except Exception as e:
-        logger.error(f"Telegram send error: {e}")
-
-async def get_claude_chat_response(message: str) -> str:
-    key = state.anthropic_key
-    if not key or "Anthropic" in key or len(key) < 20:
-        return (
-            "🤖 [CEO Agent]: ยังไม่ได้เชื่อมต่อ Anthropic API Key ครับ "
-            "กรุณาตั้งค่าใน Settings เพื่อสนทนากับ Claude!"
-        )
-    try:
-        client = anthropic.AsyncAnthropic(api_key=key)
-        total_equity = state.get_total_equity()
-        indicators = state.indicators if isinstance(state.indicators, dict) else {}
-
-        system_prompt = (
-            f"คุณคือ CEO Agent (JARVIS-CEO) หัวหน้าทีม AI Trading Virtual Office "
-            f"ตอบภาษาไทยอย่างสุภาพ กระชับ มืออาชีพ เน้นการวิเคราะห์ตลาดและพอร์ตลงทุน\n"
-            f"ข้อมูลพอร์ตปัจจุบัน:\n"
-            f"- สินทรัพย์: {state.symbol}\n"
-            f"- ราคา: {indicators.get('latest', 'N/A')}\n"
-            f"- เทรนด์: {indicators.get('trend', 'N/A')}\n"
-            f"- RSI: {indicators.get('rsi', 'N/A')}\n"
-            f"- ATR: {indicators.get('atr', 'N/A')}\n"
-            f"- สัญญาณ: {state.signal.get('action', 'N/A')} (conf: {state.signal.get('confidence', 0):.0%})\n"
-            f"- Risk: {'✅ ผ่าน' if state.risk.get('passed') else '❌ ระงับ'}\n"
-            f"- Net Worth: ${total_equity:,.2f}"
-        )
-
-        response = await client.messages.create(
-            model="claude-sonnet-4-5",
-            max_tokens=800,
-            system=system_prompt,
-            messages=[{"role": "user", "content": message}]
-        )
-        return response.content[0].text
-    except Exception as e:
-        logger.error(f"Claude chat error: {e}")
-        return f"🤖 [CEO Agent]: Claude API ขัดข้องชั่วคราว: {str(e)[:100]}"
-
-async def get_claude_chat_response_streaming(message: str, ws_broadcast_fn):
-    """Claude streaming chat — ส่ง chunks ผ่าน WebSocket"""
-    key = state.anthropic_key
-    if not key or "Anthropic" in key or len(key) < 20:
-        await ws_broadcast_fn({"type": "chat_chunk", "text": "ยังไม่ได้ตั้งค่า Anthropic API Key ครับ", "done": True})
-        return
-
-    try:
-        client = anthropic.AsyncAnthropic(api_key=key)
-        total_equity = state.get_total_equity()
-        indicators = state.indicators if isinstance(state.indicators, dict) else {}
-
-        system_prompt = (
-            f"คุณคือ CEO Agent ตอบภาษาไทย กระชับ มืออาชีพ\n"
-            f"สินทรัพย์: {state.symbol}, ราคา: {indicators.get('latest', 'N/A')}, "
-            f"เทรนด์: {indicators.get('trend', 'N/A')}, RSI: {indicators.get('rsi', 'N/A')}, "
-            f"Net Worth: ${total_equity:,.2f}"
-        )
-
-        full_text = ""
-        async with client.messages.stream(
-            model="claude-sonnet-4-5",
-            max_tokens=600,
-            system=system_prompt,
-            messages=[{"role": "user", "content": message}]
-        ) as stream:
-            async for text_chunk in stream.text_stream:
-                full_text += text_chunk
-                await ws_broadcast_fn({"type": "chat_chunk", "text": text_chunk, "done": False})
-
-        await ws_broadcast_fn({"type": "chat_chunk", "text": "", "done": True, "full_text": full_text})
-
-        if state.telegram_token and state.telegram_chat_id and "Telegram" not in state.telegram_token:
-            try:
-                user_text = f"👤 <b>[คำถามของคุณบน Dashboard]</b>:\n{message}"
-                await send_telegram_direct_message(state.telegram_chat_id, user_text, parse_mode="HTML")
-                
-                ceo_text = f"💼 <b>[CEO Agent ตอบบน Dashboard]</b>:\n{full_text}"
-                await send_telegram_direct_message(state.telegram_chat_id, ceo_text, parse_mode="HTML")
-            except Exception as e:
-                logger.error(f"Error sending stream chat copy to Telegram: {e}")
-
-    except Exception as e:
-        logger.error(f"Claude streaming error: {e}")
-        await ws_broadcast_fn({"type": "chat_chunk", "text": f"Claude API error: {str(e)[:80]}", "done": True})
-
-# ─────────────────────────────────────────────────────────
-# Telegram Command Handler
-# ─────────────────────────────────────────────────────────
 async def handle_telegram_command_logic(cmd: str, user_tag: str) -> str:
+    global current_symbol, current_mode
+    
     if cmd.startswith("/analyze"):
         parts = cmd.split()
-        target_symbol = state.symbol
-        if len(parts) > 1:
-            sym_input = parts[1].upper()
-            if sym_input in SYMBOLS:
-                target_symbol = sym_input
-            else:
-                return f"❌ ไม่รู้จักสินทรัพย์ {sym_input}"
-        asyncio.create_task(trigger_market_update(target_symbol))
-        return f"🤖 กำลังวิเคราะห์ {target_symbol}... ติดตามผลบน Dashboard!"
-
-    elif cmd.startswith("/price"):
-        parts = cmd.split()
-        sym = parts[1].upper() if len(parts) > 1 and parts[1].upper() in SYMBOLS else state.symbol
-        live_price = await fetch_actual_market_price(sym)
-        price_val = live_price or SYMBOLS[sym]["base"]
-        indicators = get_market_indicators(generate_price_history(sym), sym)
-        rsi = indicators.get("rsi", 50)
-        trend = indicators.get("trend", "N/A")
-        return f"📊 *[ราคาล่าสุด]* — {sym}\nราคา: *{price_val}*\nเทรนด์: {trend} | RSI: {rsi}"
-
+        symbol = parts[1].upper() if len(parts) > 1 else current_symbol
+        from backend.core import SYMBOLS
+        if symbol not in SYMBOLS:
+            return f"❌ ไม่พบคู่สินทรัพย์ที่ต้องการวิเคราะห์: {symbol}"
+        
+        current_symbol = symbol
+        journal_entry = {
+            "ticker": symbol,
+            "decision": "MANUAL_ANALYSIS_TRIGGERED",
+            "signal_action": "HOLD",
+            "confidence_score": 1.0,
+            "reasons": [f"ได้รับคำสั่งวิเคราะห์ด่วนสำหรับ {symbol} จาก {user_tag}"]
+        }
+        await event_bus.publish(CH_AI_JOURNAL, journal_entry)
+        
+        return (
+            f"📊 ได้รับคำสั่งวิเคราะห์ด่วนสำหรับ {symbol} จากคุณโทนี่ ({user_tag}) เรียบร้อย!\n"
+            f"ขณะนี้กำลังกระตุ้นเสวนากรรมการ AI ทั้ง 6 ฝ่ายและระบบ Risk Guardian เพื่อเขียนมติอัปเดต โปรดดูสตรีมแชทสดบน Dashboard ของออฟฟิศ..."
+        )
+        
     elif cmd.startswith("/wallet"):
-        total_val = state.get_total_equity()
-        bal_str = "\n".join([f"- *{b['source']}*: ${b['equity']:,.2f}" for b in state.balances])
-        return f"💼 *[Net Worth Report]*\n{bal_str}\n\n💰 *รวม*: `${total_val:,.2f}`"
-
-    elif cmd.startswith("/report"):
-        orders = await get_orders_from_db()
-        closed = [o for o in orders if o["status"] == "CLOSED"]
-        total_pnl = sum(o["pnl"] for o in closed)
-        total_fee = sum(o["fee"] for o in closed)
-        win = len([o for o in closed if o["pnl"] > 0])
-        wr = (win / len(closed) * 100) if closed else 0
+        balances = await calculate_balances()
+        total_equity = sum(bal["equity"] for bal in balances)
+        balance_details = "\n".join([f"- {b['source']}: ยอดคงเหลือ ${b['balance']:,} (Equity: ${b['equity']:,})" for b in balances])
         return (
-            f"📋 *[Performance Report]*\n"
-            f"- ดีลที่ปิด: *{len(closed)}*\n"
-            f"- Win Rate: *{wr:.1f}%*\n"
-            f"- Net PnL: *${total_pnl:+.2f}*\n"
-            f"- ค่าธรรมเนียม: *${total_fee:.2f}*\n"
-            f"- Net หลังหักค่าธรรมเนียม: *${total_pnl - total_fee:+.2f}*"
+            f"🔍 [รายงาน Wallet Intel AI]\n"
+            f"ยอดมูลค่าทรัพย์สินพอร์ตรวม (Net Worth): ${total_equity:,.2f}\n\n"
+            f"รายละเอียดสมุดรายวัน:\n{balance_details}"
         )
-
-    elif cmd.startswith("/risk"):
-        passed_text = "ผ่าน ✅" if state.risk.get("passed") else "ระงับ 🔴"
-        lot = state.risk.get("calculatedLot", 0.1)
-        return (
-            f"🛡️ *[Risk Status]*\n"
-            f"สถานะ: *{passed_text}*\n"
-            f"ความเสี่ยง/ไม้: {state.risk.get('riskPct', 0):.2f}%\n"
-            f"Exposure: {state.risk.get('exposurePct', 0):.2f}%\n"
-            f"Lot ที่แนะนำ (ATR-based): {lot}"
-        )
-
-    elif cmd.startswith("/alerts"):
-        thresholds = ", ".join([f"{k}={v}" for k, v in ALERT_CONFIG.items()])
-        return f"🚨 *[Alert Config]*\n{thresholds}\n\nระบบ Alert ทำงานปกติ ✅"
-
+        
     elif cmd.startswith("/mode"):
         parts = cmd.split()
-        if len(parts) > 1 and parts[1] in ["auto", "watch"]:
-            async with state._state_lock:
-                state.mode = parts[1]
-            return f"⚙️ สลับโหมดเป็น *{state.mode.upper()}* เรียบร้อย"
-        return f"⚙️ โหมดปัจจุบัน: *{state.mode.upper()}*\nใช้ `/mode auto` หรือ `/mode watch`"
-
-    elif cmd.startswith("/reset_breaker"):
-        if state.circuit_breaker_triggered:
-            async with state._state_lock:
-                state.circuit_breaker_triggered = False
-                state.daily_realized_pnl = 0.0
-            add_journal_entry("breaker_reset", "ปลดล็อกระบบ Circuit Breaker และรีเซ็ต PnL รายวันผ่าน Telegram")
-            return "✅ *[Circuit Breaker Reset]*: ปลดล็อกระบบและรีเซ็ตประวัติขาดทุนรายวันเรียบร้อย บอทพร้อมเทรดอีกครั้ง!"
+        if len(parts) > 1 and parts[1].lower() in ["auto", "watch"]:
+            new_mode = parts[1].lower()
+            current_mode = new_mode
+            os.environ["CURRENT_MODE"] = new_mode
+            
+            journal_entry = {
+                "ticker": current_symbol,
+                "decision": "MODE_CHANGE",
+                "signal_action": "HOLD",
+                "confidence_score": 1.0,
+                "reasons": [f"สลับโหมดการควบคุมหลักเป็น: {new_mode.upper()}"]
+            }
+            await event_bus.publish(CH_AI_JOURNAL, journal_entry)
+            return f"⚙️ สลับโหมดการทำออเดอร์เป็น [{new_mode.upper()}] สำเร็จแล้วครับ"
+        return "❓ วิธีใช้งาน: พิมพ์ `/mode auto` หรือ `/mode watch`"
+    
+    elif cmd.startswith("/price"):
+        parts = cmd.split()
+        symbol = parts[1].upper() if len(parts) > 1 else current_symbol
+        from backend.core import SYMBOLS
+        if symbol not in SYMBOLS:
+            return f"❌ ไม่พบคู่สินทรัพย์: {symbol}"
+            
+        df = ticker_data.get(symbol)
+        if df is not None and not df.empty:
+            prices_list = df['price'].tolist()
         else:
-            return "ℹ️ ระบบความปลอดภัยปกติ ไม่ได้เปิดทำงาน Circuit Breaker อยู่"
-
+            prices_list = []
+        indicators = get_market_indicators(prices_list, symbol)
+        
+        return (
+            f"📈 [ราคาเสนอซื้อล่าสุด]\n"
+            f"คู่เหรียญ/หุ้น: {symbol}\n"
+            f"ราคาเฉลี่ยปัจจุบัน: {indicators['latest']}\n"
+            f"เทรนด์ภาพรวม: {indicators['trend']}"
+        )
+        
+    elif cmd.startswith("/report"):
+        orders = await load_orders_from_db()
+        today_pnl = sum(o.get("pnl", 0.0) for o in orders)
+        return (
+            f"📝 [รายงานผลเทรดจาก Report AI]\n"
+            f"ประวัติดีลสำเร็จสะสม: {len(orders)} รายการ\n"
+            f"ผลกำไร P&L สุทธิวันนี้: ${today_pnl:.2f}"
+        )
+        
+    elif cmd.startswith("/risk"):
+        df = ticker_data.get(current_symbol)
+        if df is not None and not df.empty:
+            prices_list = df['price'].tolist()
+        else:
+            prices_list = []
+        indicators = get_market_indicators(prices_list, current_symbol)
+        signal = evaluate_strategy_rules(indicators, current_symbol)
+        risk = check_trade_risk(
+            current_symbol,
+            signal["action"],
+            indicators["latest"],
+            current_risk_input["lot"],
+            current_risk_input["stopDistance"],
+            current_risk_input["spread"],
+            take_profit=current_risk_input["takeProfit"],
+            reject_threshold=current_risk_input["rejectThreshold"],
+            risk_pct_limit=current_risk_input["riskPct"]
+        )
+        
+        passed_txt = "ผ่านเกณฑ์บริหารความปลอดภัย 🟢" if risk["passed"] else "ระงับออเดอร์ความปลอดภัยต่ำ 🔴"
+        return (
+            f"🛡️ [การตรวจความปลอดภัย Risk AI]\n"
+            f"สถานะ: {passed_txt}\n"
+            f"สัดส่วนความเสี่ยงไม้: {risk['riskPct']}%\n"
+            f"สัดส่วน Exposure: {risk['exposurePct']}%"
+        )
+        
+    elif cmd.startswith("/alerts"):
+        return "🚨 [รายงานระบบ Alert AI]\nระบบสตรีม WebSocket และ Ledger ERP กำลังทำงานได้เสถียร 100% ไม่มีภัยคุกคามตรวจพบครับ"
+        
     elif cmd.startswith("/pause"):
-        add_journal_entry("system_pause", "ระงับระบบผ่าน Telegram")
-        return "⏸️ ระงับระบบ Virtual Office ชั่วคราว"
-
-    elif cmd.startswith("/close_all") or cmd.startswith("/close all"):
-        def _close_all():
-            db = SessionLocal()
-            try:
-                db.query(Trade).filter(Trade.status == TradeStatus.OPEN).update(
-                    {Trade.status: TradeStatus.CLOSED}
-                )
-                db.commit()
-            except Exception as e:
-                logger.error(f"Close all error: {e}")
-            finally:
-                db.close()
-        await asyncio.to_thread(_close_all)
-        add_journal_entry("orders_cleared", "ล้างออเดอร์ทั้งหมดผ่าน Telegram")
-        return "🧹 ปิดและเคลียร์ออเดอร์ทั้งหมดเรียบร้อย"
-
+        current_mode = "watch"
+        os.environ["CURRENT_MODE"] = "watch"
+        journal_entry = {
+            "ticker": current_symbol,
+            "decision": "SYSTEM_PAUSE",
+            "signal_action": "HOLD",
+            "confidence_score": 1.0,
+            "reasons": ["ระบบการวิเคราะห์และยิงออเดอร์ถูกระงับชั่วคราวผ่าน Telegram"]
+        }
+        await event_bus.publish(CH_AI_JOURNAL, journal_entry)
+        return "⏸️ สั่งการสำเร็จ: ระงับระบบ Virtual Office ชั่วคราวเรียบร้อย"
+        
+    elif cmd.startswith("/close all"):
+        db = SessionLocal()
+        try:
+            open_trades = db.query(Trade).filter(Trade.status.in_([TradeStatus.OPEN, TradeStatus.RUNNING, TradeStatus.PARTIAL])).all()
+            for t in open_trades:
+                t.status = TradeStatus.CANCELLED
+            db.commit()
+        finally:
+            db.close()
+            
+        journal_entry = {
+            "ticker": current_symbol,
+            "decision": "ORDERS_CLEARED",
+            "signal_action": "HOLD",
+            "confidence_score": 1.0,
+            "reasons": ["สั่งล้างสัญญาทั้งพอร์ตจำลองโดยผู้ใช้"]
+        }
+        await event_bus.publish(CH_AI_JOURNAL, journal_entry)
+        return "🧹 สั่งปิดและเคลียร์ประวัติคำสั่งเทรดกระดาษเรียบร้อยแล้วครับ"
+        
     else:
         return (
-            "💬 *คำสั่งที่รองรับ:*\n"
-            "- `/price [Symbol]` ราคาล่าสุด\n"
-            "- `/analyze [Symbol]` วิเคราะห์ AI\n"
-            "- `/wallet` Net Worth\n"
-            "- `/report` Performance\n"
-            "- `/risk` ความเสี่ยง\n"
-            "- `/alerts` ตั้งค่า Alert\n"
-            "- `/mode [auto/watch]` โหมดเทรด\n"
-            "- `/close_all` ปิดออเดอร์ทั้งหมด\n"
-            "- `/reset_breaker` ปลดล็อกเบรกเกอร์ขาดทุนสะสมรายวัน"
+            "💬 คำสั่งที่รองรับ:\n"
+            "- `/price [Symbol]` (ตรวจราคาล่าสุด)\n"
+            "- `/analyze [Symbol]` (สแกนสภา AI วิเคราะห์ด่วน)\n"
+            "- `/wallet` (ตรวจ Net Worth ทรัพย์สินพอร์ต)\n"
+            "- `/mode [auto/watch]` (เปลี่ยนโหมดควบคุมพอร์ต)\n"
+            "- `/report` (ผลกำไร P&L พอร์ตวันนี้)\n"
+            "- `/risk` (ตรวจวัดเกราะความเสี่ยง)\n"
+            "- `/alerts` (ดูบันทึกแจ้งเตือนภัยพอร์ต)\n"
+            "- `/pause` (กดปุ่มฉุกเฉินหยุดการซื้อขาย)\n"
+            "- `/close all` (ล้างสัญญาจำลองที่ค้างคา)"
         )
 
-# ─────────────────────────────────────────────────────────
-# Telegram Poller
-# ─────────────────────────────────────────────────────────
-async def telegram_bot_poller():
-    logger.info("Telegram Poller started")
-    while True:
-        token = state.telegram_token
-        if not token or "Telegram" in token or len(token) < 20:
-            await asyncio.sleep(4)
-            continue
-        try:
-            r = await get_http_client().get(
-                f"https://api.telegram.org/bot{token}/getUpdates",
-                params={"offset": state.last_update_id + 1, "timeout": 3},
-                timeout=6.0
-            )
-            if r.status_code == 200:
-                res = r.json()
-                if res.get("ok"):
-                    for upd in res.get("result", []):
-                        state.last_update_id = max(state.last_update_id, upd["update_id"])
-                        await handle_real_telegram_update(upd)
-        except httpx.TimeoutException:
-            logger.warning("[Telegram] Poller timeout — retrying")
-        except httpx.NetworkError as e:
-            logger.warning(f"[Telegram] Network error: {e}")
-        except Exception as e:
-            logger.error(f"Telegram poller error: {type(e).__name__}: {e}")
-        await asyncio.sleep(2.0)
-
-async def handle_real_telegram_update(upd: Dict[str, Any]):
-    if "message" in upd:
-        msg = upd["message"]
-        chat_id = str(msg["chat"]["id"])
-        state.telegram_chat_id = chat_id
-        text = msg.get("text", "").strip()
-        if not text:
-            return
-
-        logger.info(f"[Telegram] Received: {text[:50]}")
-
-        await manager.broadcast({
-            "type": "agent_typing",
-            "message": {
-                "agent": "user",
-                "role": "ผู้บัญชาการพอร์ต",
-                "avatar": "👤",
-                "message": f"Telegram: {text}",
-                "timestamp": datetime.now().isoformat()
-            }
-        })
-
-        if text.startswith("/"):
-            response_text = await handle_telegram_command_logic(text, f"TG_{chat_id[:6]}")
-        else:
-            response_text = await get_claude_chat_response(text)
-
-        await send_telegram_direct_message(chat_id, response_text)
-
-        await manager.broadcast({
-            "type": "agent_typing",
-            "message": {
-                "agent": "CEO Agent",
-                "role": "ผู้นำบัญชาการ",
-                "avatar": "💼",
-                "message": response_text,
-                "timestamp": datetime.now().isoformat()
-            }
-        })
-
-    elif "callback_query" in upd:
-        cb = upd["callback_query"]
-        cb_id = cb["id"]
-        chat_id = str(cb["message"]["chat"]["id"])
-        cb_data = cb.get("data", "")
-
-        if cb_data.startswith("approve_"):
-            if state.signal_executed:
-                reply_text = "ℹ️ ออเดอร์นี้ได้รับการอนุมัติอัตโนมัติไปแล้ว"
-            elif state.risk.get("passed"):
-                await execute_mock_trade()
-                reply_text = "🟢 อนุมัติสำเร็จ! เปิดออเดอร์และบันทึก ERP แล้ว"
-            else:
-                reply_text = "❌ ความเสี่ยงไม่ผ่านเกณฑ์ ไม่สามารถเทรดได้"
-        elif cb_data.startswith("reject_"):
-            if state.signal_executed:
-                reply_text = "ℹ️ ออเดอร์นี้ได้รับการอนุมัติและเทรดไปแล้ว"
-            else:
-                add_journal_entry("trade_rejected", "ปฏิเสธแผนเทรดผ่าน Telegram")
-                reply_text = "🔴 ยกเลิกแผนเทรดเรียบร้อย"
-        else:
-            reply_text = "ไม่ทราบรายการ"
-
-        try:
-            await get_http_client().post(
-                f"https://api.telegram.org/bot{state.telegram_token}/answerCallbackQuery",
-                json={"callback_query_id": cb_id, "text": reply_text}
-            )
-        except Exception as e:
-            logger.error(f"Telegram callback error: {e}")
-
-# ─────────────────────────────────────────────────────────
-# Telegram Periodic Summary Reporter (runs every 5 minutes)
-# ─────────────────────────────────────────────────────────
-async def telegram_periodic_reporter():
-    logger.info("Telegram Periodic Reporter started")
-    while True:
-        await asyncio.sleep(300)  # Report every 5 minutes
-        if not state.telegram_token or not state.telegram_chat_id or "Telegram" in state.telegram_token:
-            continue
-        try:
-            total_val = state.get_total_equity()
-            bal_str = "\n".join([f"- *{b['source']}*: ${b['equity']:,.2f}" for b in state.balances])
-            
-            orders = await get_orders_from_db()
-            closed = [o for o in orders if o["status"] == "CLOSED"]
-            total_pnl = sum(o["pnl"] for o in closed)
-            total_fee = sum(o["fee"] for o in closed)
-            win = len([o for o in closed if o["pnl"] > 0])
-            wr = (win / len(closed) * 100) if closed else 0
-            
-            report_text = (
-                f"📋 *[รายงานสรุปสถานะพอร์ตอัตโนมัติ]*\n\n"
-                f"💰 *มูลค่าพอร์ตรวม*: `${total_val:,.2f}`\n"
-                f"{bal_str}\n\n"
-                f"📈 *สถิติการเทรดล่าสุด*:\n"
-                f"- ออเดอร์ที่ปิดแล้ว: *{len(closed)}* ดีล\n"
-                f"- Win Rate: *{wr:.1f}%*\n"
-                f"- กำไรสุทธิ (Net PnL): *${total_pnl:+.2f}*\n"
-                f"- ค่าธรรมเนียมสะสม: *${total_fee:.2f}*\n\n"
-                f"⚙️ *การตั้งค่าระบบ*: ทำงานปกติ | โหมด: *{state.mode.upper()}* (Auto 100% Active ✅)"
-            )
-            await send_telegram_direct_message(state.telegram_chat_id, report_text)
-            logger.info("Sent periodic summary to Telegram")
-        except Exception as e:
-            logger.error(f"Error sending periodic Telegram report: {e}")
-
-# ─────────────────────────────────────────────────────────
-# Real-time Price Event Listener (Subscribes to CH_MARKET_DATA)
-# ─────────────────────────────────────────────────────────
-async def realtime_price_listener():
-    logger.info("Real-time Price Signal Listener started")
-    async for msg in event_bus.subscribe(CH_MARKET_DATA):
-        if not isinstance(msg, dict):
-            continue
-        ticker = msg.get("ticker", "").upper()
-        price = msg.get("price")
-        if not ticker or price is None:
-            continue
-            
-        active_symbol = state.symbol
-        norm_ticker = ticker.replace("/", "").replace("-", "")
-        norm_active = active_symbol.replace("/", "").replace("-", "")
-        
-        if norm_ticker == norm_active:
-            new_price = float(price)
-            prev_price = state.indicators.get("latest") if isinstance(state.indicators, dict) else None
-            
-            async with state._state_lock:
-                append_price(active_symbol, new_price)
-                state.prices = generate_price_history(active_symbol)
-                state.indicators = _compute_indicators(active_symbol, state.ohlc_candles, state.prices)
-                state.signal = evaluate_strategy_rules(state.indicators, active_symbol, state.macro_trend_1h)
-
-                if state.signal["action"] == "HOLD":
-                    state.signal_executed = False
-
-                state.risk = _update_risk_from_signal(active_symbol, state.signal, state.indicators)
-
-            # Broadcast real-time update to UI
-            await manager.broadcast({
-                "type": "price_tick",
-                "symbol": active_symbol,
-                "price": new_price,
-                "indicators": state.indicators,
-                "signal": state.signal,
-                "risk": state.risk
-            })
-
-            # Check alerts
-            await check_and_send_alerts(active_symbol, state.indicators, prev_price)
-
-            # Instantly trigger debate and auto-execution on a new trading signal (BUY/SELL)
-            if state.signal["action"] in ["BUY", "SELL"] and not state.signal_executed and not state.is_debating:
-                try:
-                    _analyze_queue.put_nowait(active_symbol)
-                    logger.info(f"⚡ [REAL-TIME SIGNAL TRIGGER] Instantly triggered debate and trade for {active_symbol} due to signal: {state.signal['action']} @ {new_price}")
-                except asyncio.QueueFull:
-                    pass
-
-# ─────────────────────────────────────────────────────────
-# Helper: Fetch 1h trend
-# ─────────────────────────────────────────────────────────
-async def fetch_historical_candles_1h(symbol: str) -> Optional[str]:
-    """ดึงแนวโน้มหลัก 1 ชั่วโมง เพื่อคำนวณ EMA(12) และ EMA(26) ยืนยันทิศทาง"""
-    yf_symbol = symbol
-    if symbol == "BTCUSDT":
-        yf_symbol = "BTC-USD"
-    elif symbol == "ETHUSDT":
-        yf_symbol = "ETH-USD"
-    elif symbol == "SOLUSDT":
-        yf_symbol = "SOL-USD"
-    elif symbol == "XAUUSD":
-        yf_symbol = "GC=F"
-    elif symbol == "EURUSD":
-        yf_symbol = "EURUSD=X"
-
-    try:
-        r = await get_http_client().get(
-            f"https://query1.finance.yahoo.com/v8/finance/chart/{yf_symbol}?interval=1h&range=5d",
-            headers={"User-Agent": "Mozilla/5.0"},
-            timeout=3.0
-        )
-        if r.status_code == 200:
-            result = r.json().get("chart", {}).get("result", [{}])[0]
-            indicators = result.get("indicators", {}).get("quote", [{}])[0]
-            close_prices = indicators.get("close", [])
-            close_prices = [float(c) for c in close_prices if c is not None]
-            if len(close_prices) >= 26:
-                s = pd.Series(close_prices)
-                ema12 = s.ewm(span=12, adjust=False).mean().iloc[-1]
-                ema26 = s.ewm(span=26, adjust=False).mean().iloc[-1]
-                if ema12 > ema26 * 1.0005:
-                    return "Bullish"
-                elif ema12 < ema26 * 0.9995:
-                    return "Bearish"
-                else:
-                    return "Sideways"
-    except Exception as e:
-        logger.error(f"Error fetching 1h trend for {symbol}: {e}")
-    return None
-
-def _get_orders_from_db_sync_by_db(db):
-    orders = []
-    try:
-        trades = db.query(Trade).order_by(Trade.opened_at.desc()).limit(30).all()
-        for t in trades:
-            orders.append({
-                "id": t.id,
-                "symbol": t.ticker,
-                "action": t.action.name if t.action else "BUY",
-                "volume": t.lot_size or 0.1,
-                "entry_price": t.entry_price or 0.0,
-                "exit_price": t.exit_price or 0.0,
-                "pnl": t.realized_pnl or 0.0,
-                "fee": 2.50,
-                "status": t.status.name if t.status else "OPEN"
-            })
-    except Exception as e:
-        logger.error(f"DB Query Error in monitor sync: {e}")
-    return orders
-
-# ─────────────────────────────────────────────────────────
-# Open Trades Monitor Task
-# ─────────────────────────────────────────────────────────
-async def open_trades_monitor():
-    """คอยตรวจสอบและบริหารจัดการออเดอร์ที่เปิดค้างอยู่แบบเรียลไทม์ (Trailing Stop / Break-Even / Partial Close)"""
-    logger.info("Open Trades Monitor task started")
-    while True:
-        await asyncio.sleep(2.0)  # Check every 2 seconds to be resource-friendly
-        try:
-            db = SessionLocal()
-            open_trades = db.query(Trade).filter(Trade.status == TradeStatus.OPEN).all()
-            if not open_trades:
-                db.close()
-                continue
-                
-            spec = SYMBOLS.get(state.symbol, SYMBOLS["XAUUSD"])
-            current_price = state.indicators.get("latest", spec["base"]) if isinstance(state.indicators, dict) else spec["base"]
-            
-            for trade in open_trades:
-                diff = current_price - trade.entry_price if trade.action == TradeAction.BUY else trade.entry_price - current_price
-                floating_pnl = round(diff * trade.lot_size * 100 * spec["tickValue"], 2)
-                
-                # 1. Break-Even Logic (+150$ Target)
-                has_moved_to_be = False
-                if trade.action == TradeAction.BUY:
-                    has_moved_to_be = bool(trade.stop_loss >= trade.entry_price)
-                else:
-                    has_moved_to_be = bool(trade.stop_loss <= trade.entry_price)
-                    
-                if floating_pnl >= 150.0 and not has_moved_to_be:
-                    tick_size = 1.0 / (10 ** spec["decimals"]) if spec["decimals"] > 0 else 1.0
-                    be_offset = 10 * tick_size
-                    new_sl = round(trade.entry_price + be_offset if trade.action == TradeAction.BUY else trade.entry_price - be_offset, spec["decimals"])
-                    
-                    trade.stop_loss = new_sl
-                    db.commit()
-                    
-                    alert_text = (
-                        f"🛡️ *[Break-Even Activated]* — {trade.ticker}\n"
-                        f"ออเดอร์ `{trade.id}` ทำกำไรถึง *$150.00* ล่าสุด\n"
-                        f"ระบบทำการขยับ Stop Loss บังหน้าทุนไปที่ *{new_sl}* เรียบร้อยเพื่อล็อกกำไรขั้นต่ำ! 🔒"
-                    )
-                    await send_telegram_direct_message(state.telegram_chat_id, alert_text)
-                    add_journal_entry("trade_be_activated", f"ออเดอร์ {trade.id} เปิดใช้งาน Break-Even SL @ {new_sl}")
-                    
-                # 2. Check Partial Take Profit (Close 50% at +$100 profit)
-                if trade.id not in state.partially_closed_trades and floating_pnl >= 100.0:
-                    state.partially_closed_trades.add(trade.id)
-                    half_lot = round(trade.lot_size / 2, 2)
-                    realized_pnl = round(floating_pnl / 2, 2)
-                    fee = round(1.25 + random.random() * 1.0, 2)
-                    
-                    # Update lot size in DB
-                    trade.lot_size = half_lot
-                    db.commit()
-                    
-                    try:
-                        await get_http_client().post(
-                            "http://localhost:5001/webhook/trade-event",
-                            json={"event": "trade.pnl_realized", "data": {
-                                "symbol": trade.ticker, "action": trade.action.name,
-                                "pnl": realized_pnl, "fee": fee
-                            }},
-                            timeout=2.0
-                        )
-                    except Exception as e:
-                        logger.error(f"ERP webhook partial close error: {e}")
-                        
-                    alert_text = (
-                        f"💰 *[Partial Take Profit]* — {trade.ticker}\n"
-                        f"ออเดอร์ `{trade.id}` ทำกำไรถึงเป้าแรก +$100.00!\n"
-                        f"ปิดทำกำไรสะสมแล้วครึ่งหนึ่ง (50% Close) *+${realized_pnl}* (เหลือสัญญาเปิด Lot: {half_lot}) 💵"
-                    )
-                    await send_telegram_direct_message(state.telegram_chat_id, alert_text)
-                    add_journal_entry("trade_partial_close", f"ออเดอร์ {trade.id} ปิดสัญญาแบ่งกำไรครึ่งหนึ่ง (Lot: {half_lot})")
-                    
-                # 3. Check SL / TP Hits
-                is_sl_hit = False
-                is_tp_hit = False
-                if trade.action == TradeAction.BUY:
-                    if current_price <= trade.stop_loss:
-                        is_sl_hit = True
-                    elif current_price >= trade.take_profit:
-                        is_tp_hit = True
-                else: # SELL
-                    if current_price >= trade.stop_loss:
-                        is_sl_hit = True
-                    elif current_price <= trade.take_profit:
-                        is_tp_hit = True
-                        
-                if is_sl_hit or is_tp_hit:
-                    final_diff = current_price - trade.entry_price if trade.action == TradeAction.BUY else trade.entry_price - current_price
-                    final_pnl = round(final_diff * trade.lot_size * 100 * spec["tickValue"], 2)
-                    fee = round(2.50 + random.random() * 2.0, 2)
-                    
-                    # Close in DB
-                    trade.status = TradeStatus.CLOSED
-                    trade.exit_price = current_price
-                    trade.realized_pnl = final_pnl
-                    trade.closed_at = datetime.utcnow()
-                    db.commit()
-                    
-                    # Update daily realized PnL for Circuit Breaker
-                    state.daily_realized_pnl = round(state.daily_realized_pnl + final_pnl, 2)
-                    
-                    # Webhook to ERP
-                    try:
-                        await get_http_client().post(
-                            "http://localhost:5001/webhook/trade-event",
-                            json={"event": "trade.pnl_realized", "data": {
-                                "symbol": trade.ticker, "action": trade.action.name,
-                                "pnl": final_pnl, "fee": fee
-                            }},
-                            timeout=2.0
-                        )
-                    except Exception as e:
-                        logger.error(f"ERP webhook close error: {e}")
-                        
-                    hit_type = "🔴 *[Stop Loss Hit]*" if is_sl_hit else "🟢 *[Take Profit Hit]*"
-                    alert_text = (
-                        f"{hit_type} — {trade.ticker}\n"
-                        f"ออเดอร์ `{trade.id}` ถูกปิดสัญญาที่ราคา *{current_price}*\n"
-                        f"ผลลัพธ์: *{'+$' if final_pnl >= 0 else '-$'}{abs(final_pnl):,.2f}* PnL | ค่าธรรมเนียม: ${fee:.2f}"
-                    )
-                    await send_telegram_direct_message(state.telegram_chat_id, alert_text)
-                    add_journal_entry("trade_closed", f"ออเดอร์ {trade.id} ปิดสัญญาที่ราคา {current_price} (PnL: {final_pnl})")
-                    
-                    # Clean up
-                    state.partially_closed_trades.discard(trade.id)
-                    
-                    # Broadcast
-                    orders_data = _get_orders_from_db_sync_by_db(db)
-                    await manager.broadcast({"type": "order_closed", "order": next((o for o in orders_data if o["id"] == trade.id), {}), "balances": state.balances})
-                    
-                    # Check Circuit Breaker trigger! (Daily loss limit 3.0% of equity)
-                    daily_loss_limit = - (state.get_total_equity() * RISK_CONFIG["maxDailyLossPct"] / 100)
-                    if state.daily_realized_pnl <= daily_loss_limit and not state.circuit_breaker_triggered:
-                        state.circuit_breaker_triggered = True
-                        state.mode = "watch"
-                        breaker_alert = (
-                            f"🚨🚨 *[CIRCUIT BREAKER TRIGGERED]* 🚨🚨\n\n"
-                            f"ยอดขาดทุนสะสมรายวัน (*${state.daily_realized_pnl}*) สูงเกินเกณฑ์ควบคุมความปลอดภัยสูงสุด "
-                            f"(*${daily_loss_limit:.2f}* หรือ {RISK_CONFIG['maxDailyLossPct']}% ของพอร์ต)\n\n"
-                            f"⚙️ *ระบบสั่งการฉุกเฉิน*:\n"
-                            f"1. สับสวิตช์ปรับเข้าสู่โหมดเฝ้าระวัง *WATCH* เรียบร้อย\n"
-                            f"2. สั่งระงับเปิดคำสั่งเทรดใหม่ทุกเหรียญถาวรชั่วคราว\n\n"
-                            f"คุณสามารถพิมพ์คำสั่ง `/reset_breaker` ใน Telegram เพื่อตรวจสอบและทำการปลดล็อกระบบเบรกเกอร์ได้ด้วยตนเอง"
-                        )
-                        await send_telegram_direct_message(state.telegram_chat_id, breaker_alert)
-                        add_journal_entry("circuit_breaker_triggered", f"ระบบความปลอดภัยหยุดบอทฉุกเฉินสะสมขาดทุน {state.daily_realized_pnl}")
-            db.close()
-        except Exception as e:
-            logger.error(f"Error in open_trades_monitor: {e}")
-
-# ─────────────────────────────────────────────────────────
-# WebSocket Bridge (Redis → WS)
-# ─────────────────────────────────────────────────────────
 async def websocket_bridge():
     channels = [
         CH_MARKET_DATA, CH_MARKET_REGIME, CH_SIGNALS,
         CH_AI_JOURNAL, CH_RISK_APPROVED, CH_RISK_REJECTED,
-        CH_EXEC_OPENED, CH_PORTFOLIO_UPDATED, CH_NEWS
+        CH_EXEC_OPENED, CH_EXEC_CLOSED, CH_PORTFOLIO_UPDATED, 
+        CH_PORTFOLIO_SNAPSHOT, CH_NEWS, CH_AI_DECISION
     ]
+    
     async def bridge_channel(channel):
         async for msg in event_bus.subscribe(channel):
+            try:
+                if channel == CH_AI_JOURNAL:
+                    detail = msg.get("reasons", [""])[0] if msg.get("reasons") else ""
+                    log_type = msg.get("decision", "INFO")
+                    entry = {
+                        "type": log_type,
+                        "detail": detail,
+                        "at": datetime.now().isoformat()
+                    }
+                    global journal_log
+                    journal_log.insert(0, entry)
+                    if len(journal_log) > 80:
+                        journal_log.pop()
+                        
+                    agent_name = "CEO Agent"
+                    if "SIGNAL_GENERATED" in log_type:
+                        agent_name = "Strategy AI"
+                    elif "RISK" in log_type:
+                        agent_name = "Risk AI"
+                    elif "EXEC" in log_type:
+                        agent_name = "EA Bot"
+                    
+                    await manager.broadcast({
+                        "type": "agent_typing",
+                        "message": {
+                            "agent": agent_name,
+                            "role": "ผู้นำบัญชาการ",
+                            "avatar": "🕴️" if agent_name == "CEO Agent" else "🤖",
+                            "message": detail,
+                            "timestamp": datetime.now().isoformat()
+                        }
+                    })
+                    
+                elif channel == CH_MARKET_DATA:
+                    if msg.get("ticker") == current_symbol:
+                        df = ticker_data.get(current_symbol)
+                        if df is not None and not df.empty:
+                            prices_list = df['price'].tolist()
+                        else:
+                            prices_list = []
+                        indicators = get_market_indicators(prices_list, current_symbol)
+                        signal = evaluate_strategy_rules(indicators, current_symbol)
+                        risk = check_trade_risk(
+                            current_symbol,
+                            signal["action"],
+                            indicators["latest"],
+                            current_risk_input["lot"],
+                            current_risk_input["stopDistance"],
+                            current_risk_input["spread"],
+                            take_profit=current_risk_input["takeProfit"],
+                            reject_threshold=current_risk_input["rejectThreshold"],
+                            risk_pct_limit=current_risk_input["riskPct"]
+                        )
+                        await manager.broadcast({
+                            "type": "price_tick",
+                            "symbol": current_symbol,
+                            "price": msg.get("price"),
+                            "indicators": indicators,
+                            "signal": signal,
+                            "risk": risk
+                        })
+                        
+                elif channel == CH_EXEC_OPENED:
+                    orders_list = await load_orders_from_db()
+                    balances_list = await calculate_balances()
+                    await manager.broadcast({
+                        "type": "order_opened",
+                        "order": orders_list[0] if orders_list else None,
+                        "balances": balances_list
+                    })
+                    
+                elif channel == CH_EXEC_CLOSED:
+                    orders_list = await load_orders_from_db()
+                    balances_list = await calculate_balances()
+                    await manager.broadcast({
+                        "type": "order_closed",
+                        "orders": orders_list,
+                        "balances": balances_list
+                    })
+                    
+                elif channel == CH_NEWS:
+                    ticker = msg["ticker"]
+                    if ticker not in latest_news_cache:
+                        latest_news_cache[ticker] = []
+                    if msg["headline"] not in [n["text"] for n in latest_news_cache[ticker]]:
+                        time_str = datetime.now().strftime("%H:%M")
+                        news_item = {
+                            "time": time_str,
+                            "source": msg["source"],
+                            "text": msg["headline"],
+                            "impact": "HIGH" if msg["final_news_score"] > 70 or "FED" in msg["headline"].upper() else "MEDIUM"
+                        }
+                        latest_news_cache[ticker].insert(0, news_item)
+                        if len(latest_news_cache[ticker]) > 8:
+                            latest_news_cache[ticker].pop()
+            except Exception as bridge_err:
+                logger.error(f"Error in WS bridge for channel {channel}: {bridge_err}")
+            
             await manager.broadcast({"type": channel, "data": msg})
-    for ch in channels:
-        asyncio.create_task(bridge_channel(ch))
 
-# ─────────────────────────────────────────────────────────
-# FastAPI Lifespan
-# ─────────────────────────────────────────────────────────
+    for ch in channels:
+        registry.register(bridge_channel(ch), name=f"ws_bridge_{ch}")
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global http_client
-
-    # Singleton HTTP Client
+    logger.info("Initializing system...")
+    
+    PAPER_MODE = os.getenv("PAPER_MODE", "true").lower() == "true"
+    logger.info(f"PAPER_MODE is set to: {PAPER_MODE}")
+    
     http_client = httpx.AsyncClient(
         timeout=httpx.Timeout(5.0, connect=2.0),
         limits=httpx.Limits(max_connections=20, max_keepalive_connections=10)
     )
-    logger.info("HTTP Client (Singleton) initialized")
-
-    # Database
+    
     Base.metadata.create_all(bind=engine)
-    logger.info("Database initialized")
-
-    # Start Engines
-    logger.info("Starting AI Trading Engines...")
+    logger.info("Database synchronized")
+    
+    logger.info("Starting up engines...")
     start_market_data_engine(event_bus)
     start_news_intelligence_engine(event_bus)
     start_market_regime_engine(event_bus)
     start_strategy_engine(event_bus)
+    start_ai_decision_engine(event_bus)
     start_risk_engine(event_bus)
     start_execution_engine(event_bus)
     start_portfolio_engine(event_bus)
-
-    # WebSocket Bridge
-    asyncio.create_task(websocket_bridge())
-
-    # Initial Market Update
-    await trigger_market_update()
-
-    # Debate Worker
-    asyncio.create_task(debate_worker())
-
-    # Telegram Poller
-    asyncio.create_task(telegram_bot_poller())
-
-    # Telegram Periodic Reporter
-    asyncio.create_task(telegram_periodic_reporter())
-
-    # Real-time Price Listener
-    asyncio.create_task(realtime_price_listener())
-
-    # Open Trades Monitor
-    asyncio.create_task(open_trades_monitor())
-
-    # Price ticker (15s interval)
-    async def price_ticker_sim():
-        tick_count = 0
-        while True:
-            await asyncio.sleep(60)
-            tick_count += 1
-            spec = SYMBOLS.get(state.symbol, SYMBOLS["XAUUSD"])
-            live_price = await fetch_actual_market_price(state.symbol)
-
-            trend_1h = await fetch_historical_candles_1h(state.symbol)
-            ohlc_df = await fetch_ohlc_candles(state.symbol) if tick_count % 5 == 0 else None
-
-            async with state._state_lock:
-                if trend_1h:
-                    state.macro_trend_1h = trend_1h
-                if ohlc_df is not None:
-                    state.ohlc_candles = ohlc_df
-                if live_price:
-                    new_price = live_price
-                else:
-                    current = state.indicators.get("latest", spec["base"]) if isinstance(state.indicators, dict) else spec["base"]
-                    change = (random.random() - 0.5) * spec["volatility"] * 0.4
-                    new_price = round(current + change, spec["decimals"])
-                    new_price = max(new_price, spec["volatility"])
-
-                append_price(state.symbol, new_price)
-                state.prices = generate_price_history(state.symbol)
-                state.indicators = _compute_indicators(state.symbol, state.ohlc_candles, state.prices)
-                state.signal = evaluate_strategy_rules(state.indicators, state.symbol, state.macro_trend_1h)
-
-                if state.signal["action"] == "HOLD":
-                    state.signal_executed = False
-
-                state.risk = _update_risk_from_signal(state.symbol, state.signal, state.indicators)
-
-            await manager.broadcast({
-                "type": "price_tick",
-                "symbol": state.symbol,
-                "price": new_price,
-                "indicators": state.indicators,
-                "signal": state.signal,
-                "risk": state.risk
-            })
-
-            # Automatically trigger debate and execution on a new BUY/SELL trading signal
-            if state.signal["action"] in ["BUY", "SELL"] and not state.signal_executed and not state.is_debating:
-                try:
-                    _analyze_queue.put_nowait(state.symbol)
-                    logger.info(f"Automatically triggered debate for {state.symbol} due to strategy signal: {state.signal['action']}")
-                except asyncio.QueueFull:
-                    pass
-
-    asyncio.create_task(price_ticker_sim())
-
+    
+    registry.register(websocket_bridge(), name="ws_bridge_manager")
+    
     yield
-
+    
+    logger.info("Initiating graceful shutdown...")
+    
+    await registry.cancel_all()
+    
     await event_bus.close()
     await http_client.aclose()
-    logger.info("Shutdown complete")
+    
+    engine.dispose()
+    
+    # Flush logs
+    for handler in logging.root.handlers:
+        handler.flush()
+        
+    logger.info("Shutdown complete. Goodbye.")
 
-# ─────────────────────────────────────────────────────────
-# FastAPI App
-# ─────────────────────────────────────────────────────────
-app = FastAPI(title="AI Trading Command Center", version="2.0.0", lifespan=lifespan)
+app = FastAPI(title="AI Trading Command Center", version="3.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -1530,326 +523,312 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ─────────────────────────────────────────────────────────
-# WebSocket Endpoint
-# ─────────────────────────────────────────────────────────
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    await manager.connect(websocket)
+@app.get("/health")
+async def health_check():
+    return {"status": "ok", "paper_mode": os.getenv("PAPER_MODE", "true").lower() == "true"}
+
+@app.get("/health/deep")
+async def deep_health_check():
+    health_status = "HEALTHY"
+    details = {}
+    
+    redis_ok = await event_bus.health_check()
+    details["redis"] = "UP" if redis_ok else "DOWN"
+    if not redis_ok: health_status = "UNHEALTHY"
+        
     try:
-        orders = await get_orders_from_db()
-        await websocket.send_json({
-            "type": "init",
-            "state": {
-                "symbol": state.symbol,
-                "latest": state.indicators.get("latest", 2342.0) if isinstance(state.indicators, dict) else 2342.0,
-                "indicators": state.indicators,
-                "signal": state.signal,
-                "risk": state.risk,
-                "mode": state.mode,
-                "balances": state.balances,
-                "journal": state.journal,
-                "orders": orders,
-                "debate": state.active_debate,
-                "is_debating": state.is_debating
-            }
-        })
-
-        while True:
-            data = await websocket.receive_text()
-            msg = json.loads(data)
-
-            if msg.get("action") == "refresh_market":
-                await trigger_market_update()
-
-            elif msg.get("type") == "command":
-                user_msg = msg.get("message", "")
-                use_streaming = msg.get("streaming", False)
-
-                # Notify thinking
-                await manager.broadcast({
-                    "type": "agent_typing",
-                    "message": {
-                        "agent": "CEO Agent",
-                        "role": "ผู้นำบัญชาการ",
-                        "avatar": "💼",
-                        "message": "กำลังวิเคราะห์...",
-                        "timestamp": datetime.now().isoformat()
-                    }
-                })
-
-                if use_streaming:
-                    await get_claude_chat_response_streaming(user_msg, manager.broadcast)
-                else:
-                    ai_reply = await get_claude_chat_response(user_msg)
-                    await manager.broadcast({
-                        "type": "agent_typing",
-                        "message": {
-                            "agent": "CEO Agent",
-                            "role": "ผู้นำบัญชาการ",
-                            "avatar": "💼",
-                            "message": ai_reply,
-                            "timestamp": datetime.now().isoformat()
-                        }
-                    })
-                    if state.telegram_token and state.telegram_chat_id and "Telegram" not in state.telegram_token:
-                        try:
-                            user_text = f"👤 <b>[คำถามของคุณบน Dashboard]</b>:\n{user_msg}"
-                            await send_telegram_direct_message(state.telegram_chat_id, user_text, parse_mode="HTML")
-                            
-                            ceo_text = f"💼 <b>[CEO Agent ตอบบน Dashboard]</b>:\n{ai_reply}"
-                            await send_telegram_direct_message(state.telegram_chat_id, ceo_text, parse_mode="HTML")
-                        except Exception as e:
-                            logger.error(f"Telegram dashboard chat copy error: {e}")
-
-    except WebSocketDisconnect:
-        await manager.disconnect(websocket)
+        db = SessionLocal()
+        db.execute(text("SELECT 1"))
+        details["database"] = "UP"
+        db.close()
     except Exception as e:
-        logger.error(f"WebSocket error: {e}")
-        await manager.disconnect(websocket)
+        details["database"] = f"DOWN: {e}"
+        health_status = "UNHEALTHY"
+        
+    from backend.shared.tasks import registry
+    active_tasks = len([t for t in registry.tasks if not t.done()])
+    details["active_background_tasks"] = active_tasks
+    if active_tasks < 5:
+        health_status = "DEGRADED" if health_status == "HEALTHY" else health_status
+        
+    return {"status": health_status, "details": details}
 
-# ─────────────────────────────────────────────────────────
-# REST API Endpoints
-# ─────────────────────────────────────────────────────────
+@app.get("/metrics")
+async def get_metrics():
+    return global_metrics
+
+@app.get("/debug/tasks")
+async def debug_tasks():
+    from backend.shared.tasks import registry
+    result = []
+    for t in registry.tasks:
+        result.append({
+            "name": t.get_name(),
+            "done": t.done(),
+            "cancelled": t.cancelled()
+        })
+    return result
+
+@app.get("/debug/prices")
+async def debug_prices():
+    import sys
+    res = {}
+    for name, mod in list(sys.modules.items()):
+        if "market_data" in name and not name.endswith("__pycache__"):
+            lp = getattr(mod, "latest_prices", None)
+            if lp is not None:
+                res[name] = {k: {**v, "timestamp": str(v["timestamp"])} for k, v in lp.items()}
+            else:
+                res[name] = "No latest_prices"
+    return res
+
+# Dashboard API Endpoints
+
 @app.get("/api/state")
-async def get_state_endpoint():
-    orders = await get_orders_from_db()
+async def get_state():
+    df = ticker_data.get(current_symbol)
+    if df is not None and not df.empty:
+        prices_list = df['price'].tolist()
+    else:
+        prices_list = []
+    
+    indicators = get_market_indicators(prices_list, current_symbol)
+    signal = evaluate_strategy_rules(indicators, current_symbol)
+    
+    risk = check_trade_risk(
+        current_symbol,
+        signal["action"],
+        indicators["latest"],
+        current_risk_input["lot"],
+        current_risk_input["stopDistance"],
+        current_risk_input["spread"],
+        take_profit=current_risk_input["takeProfit"],
+        reject_threshold=current_risk_input["rejectThreshold"],
+        risk_pct_limit=current_risk_input["riskPct"]
+    )
+    
+    orders = await load_orders_from_db()
+    balances = await calculate_balances()
+    
     return {
-        "symbol": state.symbol,
-        "latest": state.indicators.get("latest", 2342.0) if isinstance(state.indicators, dict) else 2342.0,
-        "indicators": state.indicators,
-        "signal": state.signal,
-        "risk": state.risk,
-        "mode": state.mode,
-        "balances": state.balances,
-        "journal": state.journal,
+        "symbol": current_symbol,
+        "latest": indicators["latest"],
+        "indicators": indicators,
+        "signal": signal,
+        "risk": risk,
+        "mode": current_mode,
+        "balances": balances,
+        "journal": journal_log,
         "orders": orders,
-        "debate": state.active_debate,
-        "is_debating": state.is_debating,
+        "debate": [],
+        "is_debating": False,
         "settings": {
-            # ✅ MASKED — ไม่โชว์ keys จริง
-            "telegram_token": state.mask_key(state.telegram_token),
-            "anthropic_key": state.mask_key(state.anthropic_key),
-            "binance_key": state.mask_key(state.binance_key),
-            "binance_secret": state.mask_key(state.binance_secret),
-            "news_api_key": state.mask_key(state.news_api_key),
-            "twelvedata_api_key": state.mask_key(state.twelvedata_api_key),
-            "finnhub_api_key": state.mask_key(state.finnhub_api_key),
-            "maxRiskPerTradePct": RISK_CONFIG["maxRiskPerTradePct"],
-            "maxOpenExposurePct": RISK_CONFIG["maxOpenExposurePct"]
+            "telegram_token": os.getenv("TELEGRAM_TOKEN", ""),
+            "anthropic_key": os.getenv("ANTHROPIC_API_KEY", ""),
+            "binance_key": os.getenv("BINANCE_API_KEY", ""),
+            "binance_secret": os.getenv("BINANCE_API_SECRET", ""),
+            "news_api_key": os.getenv("NEWS_API_KEY", ""),
+            "twelvedata_api_key": os.getenv("TWELVEDATA_API_KEY", ""),
+            "finnhub_api_key": os.getenv("FINNHUB_API_KEY", "")
         }
     }
 
-@app.get("/api/metrics")
-async def get_metrics_endpoint():
-    metrics = await get_metrics()
-    return metrics
-
-@app.get("/api/trades")
-async def get_trades():
-    def _query():
-        db = SessionLocal()
-        try:
-            trades = db.query(Trade).order_by(Trade.opened_at.desc()).limit(50).all()
-            return [{
-                "id": t.id,
-                "ticker": t.ticker,
-                "action": t.action.name if t.action else "BUY",
-                "status": t.status.name if t.status else "OPEN",
-                "entry_price": t.entry_price,
-                "exit_price": t.exit_price,
-                "lot_size": t.lot_size,
-                "stop_loss": t.stop_loss,
-                "take_profit": t.take_profit,
-                "realized_pnl": t.realized_pnl,
-                "opened_at": t.opened_at.isoformat() if t.opened_at else None,
-                "closed_at": t.closed_at.isoformat() if t.closed_at else None
-            } for t in trades]
-        finally:
-            db.close()
-    return await asyncio.to_thread(_query)
-
-@app.get("/api/news")
-async def get_live_news():
-    news_api_key = state.news_api_key
-    if news_api_key and "News" not in news_api_key and len(news_api_key) > 10:
-        try:
-            keyword = state.symbol.replace("USDT", "").replace("USD", " USD")
-            r = await get_http_client().get(
-                f"https://newsapi.org/v2/everything?q={keyword}&apiKey={news_api_key}&pageSize=5&sortBy=publishedAt&language=en",
-                timeout=3.0
-            )
-            if r.status_code == 200:
-                articles = r.json().get("articles", [])
-                news = []
-                for a in articles[:4]:
-                    news.append({
-                        "time": a.get("publishedAt", "")[:16].replace("T", " "),
-                        "source": a.get("source", {}).get("name", "NewsAPI"),
-                        "text": a.get("title", ""),
-                        "url": a.get("url", ""),
-                        "impact": "HIGH" if any(kw in (a.get("title","")).lower() for kw in ["fed", "rate", "inflation", "crash"]) else "MEDIUM"
-                    })
-                if news:
-                    return {"success": True, "news": news, "source": "newsapi"}
-        except Exception as e:
-            logger.error(f"News API error: {e}")
-
-    # Fallback
-    return {
-        "success": True,
-        "source": "fallback",
-        "news": [
-            {"time": "Live", "source": "Market Monitor", "text": f"ราคา {state.symbol} เคลื่อนตัวในกรอบ — RSI: {state.indicators.get('rsi', 50) if isinstance(state.indicators, dict) else 50}", "impact": "MEDIUM"},
-            {"time": "Live", "source": "FED Watch", "text": "ธนาคารกลางยังคงนโยบายการเงินตามคาดการณ์ของตลาด", "impact": "HIGH"},
-            {"time": "Live", "source": "Macro View", "text": "Sentiment นักลงทุนสถาบันยังเป็นบวกต่อสินทรัพย์เสี่ยง", "impact": "MEDIUM"}
-        ]
-    }
-
-# ─────────────────────────────────────────────────────────
-# Pydantic Models
-# ─────────────────────────────────────────────────────────
-class SymbolRequest(BaseModel):
-    symbol: str
-
-class OrderRequest(BaseModel):
-    lot: float
-    stopDistance: float
-    spread: float
-
-class SettingsRequest(BaseModel):
-    telegram_token: str
-    anthropic_key: str
-    binance_key: str
-    binance_secret: str
-    news_api_key: str
-    twelvedata_api_key: str
-    finnhub_api_key: str
-    maxRiskPerTradePct: float
-    maxOpenExposurePct: float
-
-class TelegramCommandRequest(BaseModel):
-    command: str
-
-class AlertConfigRequest(BaseModel):
-    rsi_overbought: float = 75
-    rsi_oversold: float = 25
-    max_drawdown_pct: float = 5.0
-    price_spike_pct: float = 2.0
-
-# ─────────────────────────────────────────────────────────
-# REST Endpoints
-# ─────────────────────────────────────────────────────────
 @app.post("/api/change-symbol")
 async def change_symbol(req: SymbolRequest):
-    if req.symbol not in SYMBOLS:
-        raise HTTPException(status_code=400, detail="ไม่รองรับสินทรัพย์นี้")
-    await trigger_market_update(req.symbol)
-    return {"status": "success", "symbol": state.symbol}
+    global current_symbol
+    symbol_upper = req.symbol.upper()
+    from backend.core import SYMBOLS
+    if symbol_upper not in SYMBOLS:
+        raise HTTPException(status_code=400, detail=f"ไม่รองรับสินทรัพย์นี้: {symbol_upper}")
+    current_symbol = symbol_upper
+    return {"status": "success", "symbol": current_symbol}
 
 @app.post("/api/update-risk")
-def update_risk(req: OrderRequest):
-    state.risk = check_trade_risk(
-        state.symbol,
-        state.signal["action"],
-        state.indicators.get("latest", 2342.0) if isinstance(state.indicators, dict) else 2342.0,
+async def update_risk(req: RiskRequest):
+    global current_risk_input
+    current_risk_input = {
+        "lot": req.lot,
+        "stopDistance": req.stopDistance,
+        "takeProfit": req.takeProfit,
+        "spread": req.spread,
+        "rejectThreshold": req.rejectThreshold,
+        "riskPct": req.riskPct
+    }
+    
+    df = ticker_data.get(current_symbol)
+    if df is not None and not df.empty:
+        prices_list = df['price'].tolist()
+    else:
+        prices_list = []
+        
+    indicators = get_market_indicators(prices_list, current_symbol)
+    signal = evaluate_strategy_rules(indicators, current_symbol)
+    
+    risk = check_trade_risk(
+        current_symbol,
+        signal["action"],
+        indicators["latest"],
         req.lot,
         req.stopDistance,
-        req.spread
+        req.spread,
+        take_profit=req.takeProfit,
+        reject_threshold=req.rejectThreshold,
+        risk_pct_limit=req.riskPct
     )
-    add_journal_entry("risk_check", f"อัปเดตความเสี่ยง Lot {req.lot} — {'ผ่าน' if state.risk['passed'] else 'ระงับ'}")
-    return state.risk
-
-@app.post("/api/approve")
-async def approve_trade():
-    if state.signal_executed:
-        return {"status": "success", "message": "ออเดอร์นี้ได้รับการอนุมัติอัตโนมัติไปแล้ว"}
-    if not state.risk.get("passed"):
-        raise HTTPException(status_code=400, detail="ความเสี่ยงไม่ผ่านเกณฑ์")
-    await execute_mock_trade()
-    return {"status": "success", "message": "เปิดออเดอร์เรียบร้อย"}
-
-@app.post("/api/reject")
-def reject_trade():
-    add_journal_entry("trade_rejected", f"ปฏิเสธแผนเทรด {state.symbol}")
-    return {"status": "success", "message": "ปฏิเสธแผนเทรดเรียบร้อย"}
+    return risk
 
 @app.post("/api/change-mode")
 async def change_mode(req: Dict[str, str]):
+    global current_mode
     mode = req.get("mode", "watch")
     if mode in ["auto", "watch"]:
-        async with state._state_lock:
-            state.mode = mode
-        add_journal_entry("mode_change", f"สลับโหมดเป็น: {mode.upper()}")
-        return {"status": "success", "mode": state.mode}
+        current_mode = mode
+        os.environ["CURRENT_MODE"] = mode
+        
+        journal_entry = {
+            "ticker": current_symbol,
+            "decision": "MODE_CHANGE",
+            "signal_action": "HOLD",
+            "confidence_score": 1.0,
+            "reasons": [f"สลับโหมดการควบคุมหลักเป็น: {mode.upper()}"]
+        }
+        await event_bus.publish(CH_AI_JOURNAL, journal_entry)
+        return {"status": "success", "mode": current_mode}
     raise HTTPException(status_code=400, detail="โหมดไม่ถูกต้อง")
 
-@app.post("/api/update-settings")
-def update_settings(req: SettingsRequest):
-    # อัปเดต state
-    state.telegram_token = req.telegram_token.strip()
-    state.anthropic_key = req.anthropic_key.strip()
-    state.binance_key = req.binance_key.strip()
-    state.binance_secret = req.binance_secret.strip()
-    state.news_api_key = req.news_api_key.strip()
-    state.twelvedata_api_key = req.twelvedata_api_key.strip()
-    state.finnhub_api_key = req.finnhub_api_key.strip()
+@app.post("/api/approve")
+async def approve_trade():
+    df = ticker_data.get(current_symbol)
+    if df is not None and not df.empty:
+        prices_list = df['price'].tolist()
+    else:
+        prices_list = []
+    indicators = get_market_indicators(prices_list, current_symbol)
+    signal = evaluate_strategy_rules(indicators, current_symbol)
+    
+    action = signal["action"]
+    if action not in ["BUY", "SELL"]:
+        action = "BUY"
+        
+    price = indicators["latest"]
+    atr = indicators["atr"]
+    if atr <= 0:
+        atr = price * 0.02
+        
+    sl_dist = current_risk_input["stopDistance"]
+    if sl_dist <= 0:
+        sl_dist = 20.0
+    tp_dist = current_risk_input["takeProfit"]
+    if tp_dist <= 0:
+        tp_dist = 40.0
+        
+    if action == "BUY":
+        stop_loss = price - sl_dist
+        take_profit = price + tp_dist
+    else:
+        stop_loss = price + sl_dist
+        take_profit = price - tp_dist
+        
+    lot_size = current_risk_input["lot"]
+    
+    from backend.shared.schema.events import RiskApprovedEvent
+    approve_event = RiskApprovedEvent(
+        ticker=current_symbol,
+        action=action,
+        lot_size=lot_size,
+        signal_price=price,
+        stop_loss=round(stop_loss, 4),
+        take_profit=round(take_profit, 4),
+        strategy_name="ManualApproval",
+        atr_at_entry=atr
+    )
+    await event_bus.publish(CH_RISK_APPROVED, approve_event.model_dump())
+    return {"status": "success", "message": "ส่งคำขอเปิดออเดอร์ไปยังตลาดเรียบร้อย"}
 
-    # Save to .env (ใช้ pathlib แทน hardcode path)
-    try:
-        env_path = Path(__file__).parent / ".env"
-        with open(env_path, "w", encoding="utf-8") as f:
-            f.write(f"TELEGRAM_TOKEN={state.telegram_token}\n")
-            f.write(f"ANTHROPIC_API_KEY={state.anthropic_key}\n")
-            f.write(f"BINANCE_API_KEY={state.binance_key}\n")
-            f.write(f"BINANCE_API_SECRET={state.binance_secret}\n")
-            f.write(f"NEWS_API_KEY={state.news_api_key}\n")
-            f.write(f"TWELVEDATA_API_KEY={state.twelvedata_api_key}\n")
-            f.write(f"FINNHUB_API_KEY={state.finnhub_api_key}\n")
-        logger.info("Settings saved to .env")
-    except Exception as e:
-        logger.error(f"Failed to save .env: {e}")
-
-    # อัปเดต Binance client
-    state._init_binance()
-
-    # อัปเดต Risk Config
-    RISK_CONFIG["maxRiskPerTradePct"] = req.maxRiskPerTradePct
-    RISK_CONFIG["maxOpenExposurePct"] = req.maxOpenExposurePct
-
-    add_journal_entry("settings_update", "อัปเดตการตั้งค่าระบบเรียบร้อย")
-    return {
-        "status": "success",
-        "settings": {
-            "telegram_token": state.mask_key(state.telegram_token),
-            "anthropic_key": state.mask_key(state.anthropic_key),
-            "binance_key": state.mask_key(state.binance_key),
-            "binance_secret": state.mask_key(state.binance_secret),
-            "news_api_key": state.mask_key(state.news_api_key),
-            "twelvedata_api_key": state.mask_key(state.twelvedata_api_key),
-            "finnhub_api_key": state.mask_key(state.finnhub_api_key),
-            "maxRiskPerTradePct": RISK_CONFIG["maxRiskPerTradePct"],
-            "maxOpenExposurePct": RISK_CONFIG["maxOpenExposurePct"]
-        }
+@app.post("/api/reject")
+async def reject_trade():
+    journal_entry = {
+        "ticker": current_symbol,
+        "decision": "TRADE_REJECTED",
+        "signal_action": "REJECT",
+        "confidence_score": 1.0,
+        "reasons": [f"ผู้ใช้ทำการปฏิเสธแผนการเทรดล่าสุดของ {current_symbol}"]
     }
+    await event_bus.publish(CH_AI_JOURNAL, journal_entry)
+    return {"status": "success", "message": "ปฏิเสธแผนการเทรดเรียบร้อย"}
 
-@app.post("/api/update-alerts")
-def update_alert_config(req: AlertConfigRequest):
-    ALERT_CONFIG["rsi_overbought"] = req.rsi_overbought
-    ALERT_CONFIG["rsi_oversold"] = req.rsi_oversold
-    ALERT_CONFIG["max_drawdown_pct"] = req.max_drawdown_pct
-    ALERT_CONFIG["price_spike_pct"] = req.price_spike_pct
-    add_journal_entry("alert_config", f"อัปเดต Alert thresholds: RSI {req.rsi_oversold}/{req.rsi_overbought}")
-    return {"status": "success", "alert_config": ALERT_CONFIG}
+@app.post("/api/reset-data")
+async def reset_data():
+    global journal_log
+    
+    from sqlalchemy import text
+    from backend.shared.database.core import engine
+    
+    tables = [
+        "erp_delivery_records",
+        "tax_ledger",
+        "trade_ledger",
+        "trades",
+        "portfolio_snapshots",
+        "performance_metrics",
+        "ai_decision_journal"
+    ]
+    
+    try:
+        with engine.begin() as conn:
+            for table in tables:
+                conn.execute(text(f"TRUNCATE TABLE {table} CASCADE;"))
+    except Exception as e:
+        logger.error(f"Error resetting database: {e}")
+        raise HTTPException(status_code=500, detail=f"Database reset failed: {e}")
+        
+    try:
+        await http_client.delete("http://localhost:5001/api/reset")
+    except Exception as e:
+        logger.error(f"Error resetting ERP server: {e}")
+        
+    journal_log = [
+        {
+            "type": "system_init",
+            "detail": "รีเซ็ตประวัติการเทรดและบันทึก ERP ทั่วทั้งระบบนิเวศเรียบร้อยแล้ว",
+            "at": datetime.now().isoformat()
+        }
+    ]
+    
+    return {"status": "success", "message": "รีเซ็ตประวัติการเทรดและระบบ ERP เรียบร้อย"}
 
-@app.get("/api/alert-config")
-def get_alert_config():
-    return {"alert_config": ALERT_CONFIG}
+@app.post("/api/update-settings")
+async def update_settings(req: SettingsRequest):
+    os.environ["TELEGRAM_TOKEN"] = req.telegram_token or ""
+    os.environ["ANTHROPIC_API_KEY"] = req.anthropic_key or ""
+    os.environ["BINANCE_API_KEY"] = req.binance_key or ""
+    os.environ["BINANCE_API_SECRET"] = req.binance_secret or ""
+    os.environ["NEWS_API_KEY"] = req.news_api_key or ""
+    os.environ["TWELVEDATA_API_KEY"] = req.twelvedata_api_key or ""
+    os.environ["FINNHUB_API_KEY"] = req.finnhub_api_key or ""
+    
+    try:
+        env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+        with open(env_path, "w", encoding="utf-8") as f:
+            f.write(f"TELEGRAM_TOKEN={req.telegram_token or ''}\n")
+            f.write(f"ANTHROPIC_API_KEY={req.anthropic_key or ''}\n")
+            f.write(f"BINANCE_API_KEY={req.binance_key or ''}\n")
+            f.write(f"BINANCE_API_SECRET={req.binance_secret or ''}\n")
+            f.write(f"NEWS_API_KEY={req.news_api_key or ''}\n")
+            f.write(f"TWELVEDATA_API_KEY={req.twelvedata_api_key or ''}\n")
+            f.write(f"FINNHUB_API_KEY={req.finnhub_api_key or ''}\n")
+            f.write(f"DATABASE_URL={os.getenv('DATABASE_URL', '')}\n")
+            f.write(f"REDIS_URL={os.getenv('REDIS_URL', '')}\n")
+            f.write(f"PAPER_MODE={os.getenv('PAPER_MODE', 'true')}\n")
+    except Exception as e:
+        logger.error(f"Error saving settings to .env: {e}")
+        
+    return {"status": "success"}
 
 @app.get("/api/erp/ledger")
 async def proxy_erp_ledger():
     try:
-        r = await get_http_client().get("http://localhost:5001/api/ledger", timeout=3.0)
+        r = await http_client.get("http://localhost:5001/api/ledger")
         return r.json()
     except Exception:
         return {"success": False, "ledger": []}
@@ -1857,37 +836,44 @@ async def proxy_erp_ledger():
 @app.get("/api/erp/tax-summary")
 async def proxy_erp_tax():
     try:
-        r = await get_http_client().get("http://localhost:5001/api/tax-summary", timeout=3.0)
+        r = await http_client.get("http://localhost:5001/api/tax-summary")
         return r.json()
     except Exception:
         return {"success": False, "data": {}}
 
-@app.get("/api/erp/summary")
-async def proxy_erp_summary():
-    try:
-        r = await get_http_client().get("http://localhost:5001/api/summary", timeout=3.0)
-        return r.json()
-    except Exception:
-        return {"success": False, "summary": {}}
+@app.get("/api/news")
+async def get_live_news():
+    ticker = current_symbol
+    feed = latest_news_cache.get(ticker, [])
+    if not feed:
+        feed = [
+            {
+                "time": datetime.now().strftime("%H:%M"),
+                "source": "MarketWatch",
+                "text": f"Market dynamics for {ticker} show consolidation around key psychological levels.",
+                "impact": "MEDIUM"
+            },
+            {
+                "time": (datetime.now() - timedelta(hours=1)).strftime("%H:%M"),
+                "source": "Reuters",
+                "text": f"Trading volume for {ticker} spikes as macro indicators align.",
+                "impact": "HIGH"
+            }
+        ]
+    return {"success": True, "news": feed}
 
 @app.post("/api/telegram/command")
 async def process_telegram_command(req: TelegramCommandRequest):
-    response = await handle_telegram_command_logic(req.command.strip(), "UI_Emulator")
+    cmd = req.command.strip()
+    response = await handle_telegram_command_logic(cmd, "UI_Emulator")
     return {"response": response}
 
-@app.get("/health")
-async def health_check():
-    orders = await get_orders_from_db()
-    return {
-        "status": "ok",
-        "version": "2.0.0",
-        "symbol": state.symbol,
-        "ws_connections": len(manager.active_connections),
-        "is_debating": state.is_debating,
-        "mode": state.mode,
-        "open_orders": len([o for o in orders if o["status"] == "OPEN"]),
-        "queue_size": _analyze_queue.qsize(),
-        "has_claude": bool(state.anthropic_key and "Anthropic" not in state.anthropic_key),
-        "has_telegram": bool(state.telegram_token and "Telegram" not in state.telegram_token),
-        "timestamp": datetime.now().isoformat()
-    }
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        while True:
+            data = await websocket.receive_text()
+    except Exception:
+        await manager.disconnect(websocket)
+

@@ -1,14 +1,17 @@
 {
   "name": "netiwat-erp-service",
-  "version": "1.0.0",
+  "version": "2.0.0",
+  "description": "Production-grade ERP service for AI Trading Command Center",
   "type": "module",
   "main": "server.mjs",
   "scripts": {
-    "start": "node server.mjs"
+    "start": "node --env-file=.env server.mjs",
+    "dev": "node --env-file=.env --watch server.mjs"
   },
   "dependencies": {
     "cors": "^2.8.5",
     "express": "^4.19.2",
-    "pg": "^8.11.5"
+    "pg": "^8.11.5",
+    "redis": "^4.7.0"
   }
 }

@@ -42,6 +42,8 @@ interface Order {
   pnl: number;
   fee: number;
   status: string;
+  opened_at?: string;
+  closed_at?: string;
 }
 
 interface ChatMessage {
@@ -149,6 +151,16 @@ export default function Dashboard() {
   const [mode, setMode] = useState("watch");
   const [balances, setBalances] = useState<Balance[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
+  const [filterDate, setFilterDate] = useState("");
+  
+  const getMenuButtonClass = (menuName: string) => {
+    const isActive = activeMenu === menuName;
+    return `w-full flex items-center justify-between px-3 py-1.5 text-[12.5px] rounded text-left transition-all duration-300 ${
+      isActive 
+        ? "bg-white/10 text-emerald-400 border-l-2 border-emerald-400 shadow-[0_0_15px_rgba(16,185,129,0.15)] backdrop-blur-sm font-bold" 
+        : "text-[#7a9bbf] hover:bg-white/5 hover:text-white"
+    }`;
+  };
   
   // --- สเตตสมุดบัญชีและภาษี ERP ---
   const [ledger, setLedger] = useState<LedgerEntry[]>([]);
@@ -176,9 +188,12 @@ export default function Dashboard() {
 
   // --- พารามิเตอร์คุมความเสี่ยง ---
   const [riskForm, setRiskForm] = useState({
-    lot: 0.1,
-    stopDistance: 15.0,
-    spread: 1.8
+    lot: 0.01,
+    stopDistance: 20.0,
+    takeProfit: 40.0,
+    spread: 2.0,
+    rejectThreshold: 3.0,
+    riskPct: 1.5
   });
 
   // --- ข้อมูลข่าวสารเศรษฐกิจมหภาคจริง ---
@@ -457,6 +472,23 @@ export default function Dashboard() {
       const data = await res.json();
       if (data.status === "success") {
         setSymbol(newSym);
+        
+        const newRiskForm = {
+          lot: 0.01,
+          stopDistance: 20.0,
+          takeProfit: 40.0,
+          spread: 2.0,
+          rejectThreshold: 3.0,
+          riskPct: 1.5
+        };
+        setRiskForm(newRiskForm);
+        
+        await fetch("http://localhost:8000/api/update-risk", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(newRiskForm)
+        });
+        
         fetchStateData();
       }
     } catch (e) {
@@ -473,7 +505,7 @@ export default function Dashboard() {
       });
       const data = await res.json();
       setRisk(data);
-      addChatMessage("system", `🛡️ ตรวจสอบความเสี่ยงสำเร็จ: Lot ${riskForm.lot} | SL ${riskForm.stopDistance} | Spread ${riskForm.spread} -> สถานะ: ${data.passed ? "ผ่าน ✅" : "บล็อก 🔴"}`);
+      addChatMessage("system", `🛡️ ตรวจสอบความเสี่ยงสำเร็จ: Lot ${riskForm.lot} | SL ${riskForm.stopDistance} | TP ${riskForm.takeProfit} | Spread Limit ${riskForm.spread} | Reject ${riskForm.rejectThreshold} | Risk Limit ${riskForm.riskPct}% -> สถานะ: ${data.passed ? "ผ่าน ✅" : "บล็อก 🔴"}`);
     } catch (e) {
       console.error(e);
       addChatMessage("system", "❌ ไม่สามารถส่งคำขอดึงความเสี่ยงจากบอทได้");
@@ -532,6 +564,26 @@ export default function Dashboard() {
     }
   };
 
+  const handleResetData = async () => {
+    if (!window.confirm("คุณต้องการล้างประวัติการเทรด สมุดบัญชี และข้อมูล ERP ทั้งหมดในระบบใช่หรือไม่? การกระทำนี้ไม่สามารถย้อนกลับได้")) {
+      return;
+    }
+    try {
+      const res = await fetch("http://localhost:8000/api/reset-data", {
+        method: "POST"
+      });
+      const data = await res.json();
+      if (data.status === "success") {
+        addChatMessage("system", "🗑️ รีเซ็ตฐานข้อมูลประวัติเทรดและ ERP กลาง เรียบร้อยแล้ว");
+        fetchStateData();
+        fetchERPData();
+      }
+    } catch (e) {
+      console.error(e);
+      addChatMessage("system", "❌ เกิดข้อผิดพลาดในการรีเซ็ตระบบ");
+    }
+  };
+
   // --- ปรับใช้การตั้งค่า Token และ Limit ใน backend ---
   const handleSaveSettings = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -575,26 +627,9 @@ export default function Dashboard() {
 
     const getRoomCenters = (canvasW: number, canvasH: number) => {
       const centers: Record<string, { cx: number; cy: number }> = {};
-      // Grid is 3 col x 3 row isometric
-      // col-row range: -2 to +2 (X axis)
-      // col+row range: 0 to 4   (Y axis)
-      // Vertical span: wallHeight (top of wall above top room) + 5 * sizeY (5 diamonds)
-      // Center point at col+row=2 => middle row
       const availH = canvasH - BOTTOM_BAR_H;
-      // Position grid center so top room (col+row=0) start above wallHeight
-      // and bottom room (col+row=4) fits before BOTTOM_BAR_H
-      // Total height: wallH + 5*sizeY; center of middle band at (col+row=2) => place at availH*0.5 roughly
-      const totalGridH = wallHeight + 5 * sizeY;
-      // เลื่อนกริดขึ้น: topMargin เล็กมากเพื่อให้กริดเต็มพื้นที่ available
-      // ห้องล่างสุด (col+row=4) อยู่ที่ gridCenterY + 4*sizeY
-      // ปลายล่างสุดของห้องนั้นอยู่ที่ gridCenterY + 5*sizeY + 15 (furniture)
-      // ดังนั้น gridCenterY + 5*sizeY + 15 <= availH => gridCenterY <= availH - 5*sizeY - 15
-      // gridCenterY = topMargin + wallHeight + 2*sizeY
-      // => topMargin = availH - 5*sizeY - 15 - wallHeight - 2*sizeY = availH - 7*sizeY - wallHeight - 15
-      const maxGridCenterY = availH - 5 * sizeY - 20;
-      const minTopMargin = 4;
-      const topMargin = Math.max(minTopMargin, (maxGridCenterY - wallHeight - 2 * sizeY) * 0.1);
-      const gridCenterY = topMargin + wallHeight + 2 * sizeY;
+      const totalH = wallHeight + 4.8 * sizeY;
+      const gridCenterY = Math.max(wallHeight + 10, (availH - totalH) / 2 + wallHeight);
       const gridCenterX = canvasW / 2;
 
       ROOMS_CONFIG.forEach((r) => {
@@ -627,10 +662,10 @@ export default function Dashboard() {
       const sizeYToSizeXRatio = 87 / 150;
       // Height constraint: wallH + 5.5*sizeY + 25 <= 0.88 * availableH
       const furniturePad = 25; // pixels for desk+agent below room center
-      const maxByH = (availableH * 0.88 - furniturePad) / (wallToSizeXRatio + 5.5 * sizeYToSizeXRatio);
-      const maxByW = (W * 0.83) / 5;
+      const maxByH = (availableH * 0.85 - 20) / (wallToSizeXRatio + 5.2 * sizeYToSizeXRatio);
+      const maxByW = (W * 0.85) / 6.0;
       const targetSizeX = Math.min(maxByH, maxByW);
-      scaleMultiplier = Math.max(0.40, Math.min(1.1, targetSizeX / 150));
+      scaleMultiplier = Math.max(0.25, Math.min(1.1, targetSizeX / 150));
       scaleMultiplierRef.current = scaleMultiplier;
       sizeX = Math.round(150 * scaleMultiplier);
       sizeY = Math.round(87 * scaleMultiplier);
@@ -1304,8 +1339,41 @@ export default function Dashboard() {
       
       const tw = ctx.measureText(text).width + 16 * scaleMultiplier;
       const th = Math.max(24, 28 * scaleMultiplier);
-      const bx = a.sx - tw / 2 + 4 * scaleMultiplier;
-      const by = a.sy - 12 - th;
+      
+      let bx = a.sx - tw / 2 + 4 * scaleMultiplier;
+      let by = a.sy - 12 - th;
+      let arrowDirection = "down"; // where the arrow points (relative to the bubble)
+      
+      // Customize positions for each room to prevent overlap in the center
+      const sidePadding = 15 * scaleMultiplier;
+      const thHalf = th / 2;
+      
+      if (a.id === "report" || a.id === "finance" || a.id === "strategy") {
+        // Left side rooms -> Bubble to the left
+        bx = a.sx - tw - sidePadding;
+        by = a.sy - thHalf;
+        arrowDirection = "right";
+      } else if (a.id === "ceo" || a.id === "chart" || a.id === "risk") {
+        // Right side rooms -> Bubble to the right
+        bx = a.sx + sidePadding + 8 * scaleMultiplier;
+        by = a.sy - thHalf;
+        arrowDirection = "left";
+      } else if (a.id === "audit") {
+        // Top-center -> Bubble slightly to the left and up
+        bx = a.sx - tw - 5 * scaleMultiplier;
+        by = a.sy - th - 5 * scaleMultiplier;
+        arrowDirection = "bottom-right";
+      } else if (a.id === "alert") {
+        // Bottom-center -> Bubble to the left and down
+        bx = a.sx - tw - 5 * scaleMultiplier;
+        by = a.sy + 5 * scaleMultiplier;
+        arrowDirection = "top-right";
+      } else if (a.id === "ea") {
+        // Center room -> Bubble above
+        bx = a.sx - tw / 2;
+        by = a.sy - 16 * scaleMultiplier - th;
+        arrowDirection = "down";
+      }
 
       ctx.fillStyle = "#070a0f";
       ctx.strokeStyle = "#06b6d4";
@@ -1315,18 +1383,73 @@ export default function Dashboard() {
 
       ctx.fillStyle = "#070a0f";
       ctx.strokeStyle = "#06b6d4";
-      ctx.beginPath();
-      ctx.moveTo(a.sx + 2 * scaleMultiplier, by + th);
-      ctx.lineTo(a.sx + 4 * scaleMultiplier, by + th + 6 * scaleMultiplier);
-      ctx.lineTo(a.sx + 8 * scaleMultiplier, by + th);
-      ctx.closePath();
-      ctx.fill();
       
-      ctx.beginPath();
-      ctx.moveTo(a.sx + 3 * scaleMultiplier, by + th);
-      ctx.lineTo(a.sx + 4 * scaleMultiplier, by + th + 6 * scaleMultiplier);
-      ctx.lineTo(a.sx + 7 * scaleMultiplier, by + th);
-      ctx.stroke();
+      if (arrowDirection === "down") {
+        ctx.beginPath();
+        ctx.moveTo(a.sx + 2 * scaleMultiplier, by + th);
+        ctx.lineTo(a.sx + 4 * scaleMultiplier, by + th + 6 * scaleMultiplier);
+        ctx.lineTo(a.sx + 8 * scaleMultiplier, by + th);
+        ctx.closePath();
+        ctx.fill();
+        
+        ctx.beginPath();
+        ctx.moveTo(a.sx + 3 * scaleMultiplier, by + th);
+        ctx.lineTo(a.sx + 4 * scaleMultiplier, by + th + 6 * scaleMultiplier);
+        ctx.lineTo(a.sx + 7 * scaleMultiplier, by + th);
+        ctx.stroke();
+      } else if (arrowDirection === "left") {
+        ctx.beginPath();
+        ctx.moveTo(bx, by + thHalf - 4 * scaleMultiplier);
+        ctx.lineTo(bx - 6 * scaleMultiplier, by + thHalf);
+        ctx.lineTo(bx, by + thHalf + 4 * scaleMultiplier);
+        ctx.closePath();
+        ctx.fill();
+        
+        ctx.beginPath();
+        ctx.moveTo(bx, by + thHalf - 3 * scaleMultiplier);
+        ctx.lineTo(bx - 6 * scaleMultiplier, by + thHalf);
+        ctx.lineTo(bx, by + thHalf + 3 * scaleMultiplier);
+        ctx.stroke();
+      } else if (arrowDirection === "right") {
+        ctx.beginPath();
+        ctx.moveTo(bx + tw, by + thHalf - 4 * scaleMultiplier);
+        ctx.lineTo(bx + tw + 6 * scaleMultiplier, by + thHalf);
+        ctx.lineTo(bx + tw, by + thHalf + 4 * scaleMultiplier);
+        ctx.closePath();
+        ctx.fill();
+        
+        ctx.beginPath();
+        ctx.moveTo(bx + tw, by + thHalf - 3 * scaleMultiplier);
+        ctx.lineTo(bx + tw + 6 * scaleMultiplier, by + thHalf);
+        ctx.lineTo(bx + tw, by + thHalf + 3 * scaleMultiplier);
+        ctx.stroke();
+      } else if (arrowDirection === "bottom-right") {
+        ctx.beginPath();
+        ctx.moveTo(bx + tw - 8 * scaleMultiplier, by + th);
+        ctx.lineTo(bx + tw, by + th + 6 * scaleMultiplier);
+        ctx.lineTo(bx + tw - 2 * scaleMultiplier, by + th);
+        ctx.closePath();
+        ctx.fill();
+        
+        ctx.beginPath();
+        ctx.moveTo(bx + tw - 7 * scaleMultiplier, by + th);
+        ctx.lineTo(bx + tw, by + th + 6 * scaleMultiplier);
+        ctx.lineTo(bx + tw - 3 * scaleMultiplier, by + th);
+        ctx.stroke();
+      } else if (arrowDirection === "top-right") {
+        ctx.beginPath();
+        ctx.moveTo(bx + tw - 8 * scaleMultiplier, by);
+        ctx.lineTo(bx + tw, by - 6 * scaleMultiplier);
+        ctx.lineTo(bx + tw - 2 * scaleMultiplier, by);
+        ctx.closePath();
+        ctx.fill();
+        
+        ctx.beginPath();
+        ctx.moveTo(bx + tw - 7 * scaleMultiplier, by);
+        ctx.lineTo(bx + tw, by - 6 * scaleMultiplier);
+        ctx.lineTo(bx + tw - 3 * scaleMultiplier, by);
+        ctx.stroke();
+      }
 
       ctx.fillStyle = "#f8fafc";
       ctx.textAlign = "center";
@@ -1604,10 +1727,10 @@ export default function Dashboard() {
   };
 
   return (
-    <div className="h-screen w-screen bg-[#0b0e14] text-[#c8d8f0] flex flex-col overflow-hidden font-sans select-none">
+    <div className="h-screen w-screen bg-[#000000] text-[#c8d8f0] flex flex-col overflow-hidden font-sans select-none">
       
       {/* ── TOPBAR ── */}
-      <header className="bg-[#070a0f] border-b border-[#1e2d45] flex items-center gap-2 px-3.5 h-10 flex-shrink-0">
+      <header className="bg-[#000000] border-b border-[#1e2d45] flex items-center gap-2 px-3.5 h-10 flex-shrink-0">
         <div className="text-[11px] font-black text-[#f0b429] tracking-wider font-mono">
           🏢 <span>TRADE</span> OFFICE
         </div>
@@ -1641,9 +1764,6 @@ export default function Dashboard() {
           </div>
         )}
 
-        <div className="flex items-center gap-1.5 bg-[#111520] border border-[#3a1a6a] rounded px-2.5 py-0.5 text-[11px] text-[#c084fc]">
-          🔑 Claude API ✓
-        </div>
         <div 
           onClick={fetchStateData}
           className="flex items-center gap-1.5 bg-[#111520] border border-[#1e2d45] hover:bg-[#161c2a] rounded px-2.5 py-0.5 text-[11px] text-[#c8d8f0] cursor-pointer transition font-bold"
@@ -1659,11 +1779,11 @@ export default function Dashboard() {
       <div className="flex flex-1 overflow-hidden">
         
         {/* ── SIDEBAR ── */}
-        <aside className="w-[172px] min-w-[172px] bg-[#070a0f] border-r border-[#1e2d45] flex flex-col flex-shrink-0">
-          <div className="p-3 border-b border-[#1e2d45]">
+        <aside className="w-[172px] min-w-[172px] bg-black/40 backdrop-blur-md border-r border-white/10 flex flex-col flex-shrink-0">
+          <div className="p-3 border-b border-white/10">
             <div className="text-[18px] mb-1">🏢</div>
             <div className="text-[8px] font-black text-[#f0b429] tracking-wider leading-relaxed">TRADE OFFICE</div>
-            <div className="text-[10px] text-[#3d5a7a]">v2.21.0 · Claude API</div>
+            <div className="text-[10px] text-[#3d5a7a]">v2.21.0 · Active</div>
           </div>
 
           <div className="p-2 space-y-3">
@@ -1672,9 +1792,7 @@ export default function Dashboard() {
               <nav className="space-y-0.5 mt-1 font-semibold">
                 <button 
                   onClick={() => setActiveMenu("Office Overview")}
-                  className={`w-full flex items-center gap-2 px-3 py-1.5 text-[12.5px] rounded text-left transition ${
-                    activeMenu === "Office Overview" ? "bg-[#0d2a14] text-[#10b981] border-l-2 border-[#10b981]" : "text-[#7a9bbf] hover:bg-[#111520] hover:text-white"
-                  }`}
+                  className={getMenuButtonClass("Office Overview")}
                 >
                   🖥 Office Overview
                 </button>
@@ -1683,9 +1801,7 @@ export default function Dashboard() {
                     setActiveMenu("Chat Center");
                     setUnreadCount(0);
                   }}
-                  className={`w-full flex items-center justify-between px-3 py-1.5 text-[12.5px] rounded text-left transition ${
-                    activeMenu === "Chat Center" ? "bg-[#0d2a14] text-[#10b981] border-l-2 border-[#10b981]" : "text-[#7a9bbf] hover:bg-[#111520] hover:text-white"
-                  }`}
+                  className={getMenuButtonClass("Chat Center")}
                 >
                   <span>💬 Chat Center</span>
                   {unreadCount > 0 && (
@@ -1696,20 +1812,16 @@ export default function Dashboard() {
                 </button>
                 <button 
                   onClick={() => setActiveMenu("AI Agents")}
-                  className={`w-full flex items-center justify-between px-3 py-1.5 text-[12.5px] rounded text-left transition ${
-                    activeMenu === "AI Agents" ? "bg-[#0d2a14] text-[#10b981] border-l-2 border-[#10b981]" : "text-[#7a9bbf] hover:bg-[#111520] hover:text-white"
-                  }`}
+                  className={getMenuButtonClass("AI Agents")}
                 >
                   <span>🤖 AI Agents</span>
                   <span className="bg-[#238636] text-white text-[8px] px-1.5 py-0.2 rounded font-bold">
-                    8
+                    9
                   </span>
                 </button>
                 <button 
                   onClick={() => setActiveMenu("Workflow Board")}
-                  className={`w-full flex items-center gap-2 px-3 py-1.5 text-[12.5px] rounded text-left transition ${
-                    activeMenu === "Workflow Board" ? "bg-[#0d2a14] text-[#10b981] border-l-2 border-[#10b981]" : "text-[#7a9bbf] hover:bg-[#111520] hover:text-white"
-                  }`}
+                  className={getMenuButtonClass("Workflow Board")}
                 >
                   📋 Workflow Board
                 </button>
@@ -1721,33 +1833,25 @@ export default function Dashboard() {
               <nav className="space-y-0.5 mt-1 font-semibold">
                 <button 
                   onClick={() => setActiveMenu("Analytics")}
-                  className={`w-full flex items-center gap-2 px-3 py-1.5 text-[12.5px] rounded text-left transition ${
-                    activeMenu === "Analytics" ? "bg-[#0d2a14] text-[#10b981] border-l-2 border-[#10b981]" : "text-[#7a9bbf] hover:bg-[#111520] hover:text-white"
-                  }`}
+                  className={getMenuButtonClass("Analytics")}
                 >
                   📊 Analytics
                 </button>
                 <button 
                   onClick={() => setActiveMenu("Performance Dashboard")}
-                  className={`w-full flex items-center gap-2 px-3 py-1.5 text-[12.5px] rounded text-left transition ${
-                    activeMenu === "Performance Dashboard" ? "bg-[#0d2a14] text-[#10b981] border-l-2 border-[#10b981]" : "text-[#7a9bbf] hover:bg-[#111520] hover:text-white"
-                  }`}
+                  className={getMenuButtonClass("Performance Dashboard")}
                 >
                   📈 Performance Dashboard
                 </button>
                 <button 
                   onClick={() => setActiveMenu("Risk Monitor")}
-                  className={`w-full flex items-center gap-2 px-3 py-1.5 text-[12.5px] rounded text-left transition ${
-                    activeMenu === "Risk Monitor" ? "bg-[#0d2a14] text-[#10b981] border-l-2 border-[#10b981]" : "text-[#7a9bbf] hover:bg-[#111520] hover:text-white"
-                  }`}
+                  className={getMenuButtonClass("Risk Monitor")}
                 >
                   ⚠️ Risk Monitor
                 </button>
                 <button 
                   onClick={() => setActiveMenu("Reports")}
-                  className={`w-full flex items-center gap-2 px-3 py-1.5 text-[12.5px] rounded text-left transition ${
-                    activeMenu === "Reports" ? "bg-[#0d2a14] text-[#10b981] border-l-2 border-[#10b981]" : "text-[#7a9bbf] hover:bg-[#111520] hover:text-white"
-                  }`}
+                  className={getMenuButtonClass("Reports")}
                 >
                   📈 Reports
                 </button>
@@ -1759,9 +1863,7 @@ export default function Dashboard() {
               <nav className="space-y-0.5 mt-1 font-semibold">
                 <button 
                   onClick={() => setActiveMenu("Settings")}
-                  className={`w-full flex items-center gap-2 px-3 py-1.5 text-[12.5px] rounded text-left transition ${
-                    activeMenu === "Settings" ? "bg-[#0d2a14] text-[#10b981] border-l-2 border-[#10b981]" : "text-[#7a9bbf] hover:bg-[#111520] hover:text-white"
-                  }`}
+                  className={getMenuButtonClass("Settings")}
                 >
                   ⚙️ Settings
                 </button>
@@ -1769,10 +1871,10 @@ export default function Dashboard() {
             </div>
           </div>
 
-          <div className="mt-auto p-3 border-t border-[#1e2d45] text-[10.5px] text-[#7a9bbf] leading-relaxed">
+          <div className="mt-auto p-3 border-t border-white/10 text-[10.5px] text-[#7a9bbf] leading-relaxed">
             <div className="flex items-center gap-1.5">
               <span className="w-1.5 h-1.5 rounded-full bg-[#10b981] shadow-[0_0_5px_#10b981]"></span>
-              8 Agents · Online
+              9 Agents · Online
             </div>
             <div className="text-[#10b981] text-[9.5px] mt-1 font-bold">MT5 & CCXT Binance</div>
           </div>
@@ -1782,7 +1884,7 @@ export default function Dashboard() {
         <main className="flex-1 flex flex-col overflow-hidden relative">
           
           {/* TAB 1: 🖥 Office Overview (Isometric Neon Tech Canvas) */}
-          <div className={`flex-1 relative overflow-hidden bg-[#06090e] ${activeMenu === "Office Overview" ? "block" : "hidden"}`} ref={wrapRef}>
+          <div className={`flex-1 relative overflow-hidden bg-[#000000] ${activeMenu === "Office Overview" ? "block" : "hidden"}`} ref={wrapRef}>
             <canvas 
               id="office" 
               ref={canvasRef}
@@ -1791,7 +1893,7 @@ export default function Dashboard() {
             />
             
             {/* ── Bottom Center: Risk Gate Control Bar (2-row layout) ── */}
-            <div className="absolute bottom-3 left-1/2 -translate-x-1/2 w-[820px] max-w-[98vw] bg-[#070a0f]/96 border border-[#1e2d45] rounded-xl px-3 py-2 shadow-2xl backdrop-blur-md flex flex-col gap-1.5">
+            <div className="absolute bottom-3 left-1/2 -translate-x-1/2 w-[820px] max-w-[98vw] bg-[#000000]/90 border border-[#1e2d45] rounded-xl px-3 py-2 shadow-2xl backdrop-blur-md flex flex-col gap-1.5">
 
               {/* แถวบน: Label + Indicators + Auto Scan */}
               <div className="flex items-center gap-2">
@@ -1843,29 +1945,50 @@ export default function Dashboard() {
                 </button>
               </div>
 
-              {/* แถวล่าง: Lot / SL / Spread + ปุ่ม Action */}
+              {/* แถวล่าง: Lot / SL / TP / Spread Limit / Reject / Risk % + ปุ่ม Action */}
               <div className="flex items-center gap-2">
-                {/* Lot / SL / Spread */}
+                {/* Lot / SL / TP / Spread Limit / Reject / Risk % */}
                 <div className="flex gap-1.5 text-[8.5px]">
                   <div>
                     <span className="text-[#3d5a7a] block text-[7.5px]">Lot</span>
                     <input type="number" step="0.01" value={riskForm.lot}
                       onChange={(e) => setRiskForm({...riskForm, lot: Number(e.target.value)})}
-                      className="w-14 bg-[#111520] border border-[#1e2d45] rounded p-0.5 text-white font-mono text-center text-[9px]"
+                      className="w-12 bg-[#111520] border border-[#1e2d45] rounded p-0.5 text-white font-mono text-center text-[9px]"
                     />
                   </div>
                   <div>
                     <span className="text-[#3d5a7a] block text-[7.5px]">SL (Pips)</span>
                     <input type="number" value={riskForm.stopDistance}
                       onChange={(e) => setRiskForm({...riskForm, stopDistance: Number(e.target.value)})}
+                      className="w-12 bg-[#111520] border border-[#1e2d45] rounded p-0.5 text-white font-mono text-center text-[9px]"
+                    />
+                  </div>
+                  <div>
+                    <span className="text-[#3d5a7a] block text-[7.5px]">TP (Pips)</span>
+                    <input type="number" value={riskForm.takeProfit}
+                      onChange={(e) => setRiskForm({...riskForm, takeProfit: Number(e.target.value)})}
+                      className="w-12 bg-[#111520] border border-[#1e2d45] rounded p-0.5 text-white font-mono text-center text-[9px]"
+                    />
+                  </div>
+                  <div>
+                    <span className="text-[#3d5a7a] block text-[7.5px]">Spread Limit</span>
+                    <input type="number" step="0.1" value={riskForm.spread}
+                      onChange={(e) => setRiskForm({...riskForm, spread: Number(e.target.value)})}
                       className="w-14 bg-[#111520] border border-[#1e2d45] rounded p-0.5 text-white font-mono text-center text-[9px]"
                     />
                   </div>
                   <div>
-                    <span className="text-[#3d5a7a] block text-[7.5px]">Spread</span>
-                    <input type="number" step="0.1" value={riskForm.spread}
-                      onChange={(e) => setRiskForm({...riskForm, spread: Number(e.target.value)})}
-                      className="w-14 bg-[#111520] border border-[#1e2d45] rounded p-0.5 text-white font-mono text-center text-[9px]"
+                    <span className="text-[#3d5a7a] block text-[7.5px]">Reject &gt;</span>
+                    <input type="number" step="0.1" value={riskForm.rejectThreshold}
+                      onChange={(e) => setRiskForm({...riskForm, rejectThreshold: Number(e.target.value)})}
+                      className="w-12 bg-[#111520] border border-[#1e2d45] rounded p-0.5 text-white font-mono text-center text-[9px]"
+                    />
+                  </div>
+                  <div>
+                    <span className="text-[#3d5a7a] block text-[7.5px]">Risk %</span>
+                    <input type="number" step="0.1" value={riskForm.riskPct}
+                      onChange={(e) => setRiskForm({...riskForm, riskPct: Number(e.target.value)})}
+                      className="w-12 bg-[#111520] border border-[#1e2d45] rounded p-0.5 text-white font-mono text-center text-[9px]"
                     />
                   </div>
                 </div>
@@ -1885,7 +2008,7 @@ export default function Dashboard() {
                   </div>
                   <button
                     onClick={handleApprove}
-                    disabled={!risk?.passed}
+                    disabled={mode === "auto" || !signal || (signal.action !== "BUY" && signal.action !== "SELL")}
                     className="px-2.5 py-1.5 bg-[#16a34a] hover:bg-[#15803d] disabled:bg-[#111520] disabled:text-[#3d5a7a] border border-[#15803d] disabled:border-[#1e2d45] text-white text-[9px] font-bold rounded transition whitespace-nowrap"
                   >
                     ✅ อนุมัติ
@@ -1932,103 +2055,249 @@ export default function Dashboard() {
           </div>
 
           {/* TAB 2: 🤖 AI Agents - Blueprint & System Prompt Viewer */}
-          <div className={`flex-1 overflow-y-auto p-6 md:p-8 bg-[#080c12] space-y-6 ${activeMenu === "AI Agents" ? "block" : "hidden"}`}>
+          <div className={`flex-1 overflow-y-auto p-6 md:p-8 bg-[#000000] space-y-6 ${activeMenu === "AI Agents" ? "block" : "hidden"}`}>
             <div className="border-b border-[#1e2d45] pb-4">
-              <h2 className="text-xl font-bold text-white">🏢 AI Trading Virtual Office — Master Prompt Blueprint</h2>
-              <p className="text-xs text-[#7a9bbf] mt-1">Version 2.21.0 | Claude API | MT5 + Crypto | Thai Language</p>
+              <h2 className="text-xl font-bold text-white">🤖 บทบาทหน้าที่ทีมงาน AI (AI Trading Virtual Office Agents)</h2>
+              <p className="text-xs text-[#7a9bbf] mt-1">อัปเดตบทบาทหน้าที่การทำงานของ 9 เอเจนต์หลัก ในระบบเทรดภาษาไทยอย่างถูกต้อง</p>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div className="bg-[#111520] border border-[#1e2d45] rounded-xl p-4 space-y-2">
-                <h3 className="text-sm font-bold text-[#60a5fa] flex items-center gap-1.5">🕴️ AGENT 1: CEO Agent (Orchestrator)</h3>
-                <p className="text-[10px] text-[#7a9bbf]">ชื่อรหัส: JARVIS-CEO | บทบาท: ผู้ประสานงานและอนุมัติหลัก</p>
-                <div className="text-xs text-[#94a3b8]">รับคำสั่ง แปลงงาน มอนิเตอร์ Risk และสรุปส่งผล Telegram ขอการคอนเฟิร์มแบบ Approve/Reject</div>
-                <pre className="bg-[#070a0f] border border-[#1e2d45] p-2 text-[10px] text-emerald-400 max-h-24 overflow-y-auto font-mono">
-{`Orchestrator: CEO Agent
-1. parallel dispatch Chart & Risk
-2. สรุปแผนเข้าพอร์ตใน 5 บรรทัด`}
-                </pre>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              
+              {/* Agent 1 */}
+              <div className="bg-white/5 border border-white/10 rounded-xl p-4 space-y-2 backdrop-blur-md hover:border-emerald-500/30 transition-all duration-300">
+                <h3 className="text-sm font-bold text-[#60a5fa] flex items-center gap-1.5 font-mono">🕴️ AGENT 1: CEO Agent</h3>
+                <p className="text-[10px] text-[#7a9bbf] font-mono">ชื่อรหัส: JARVIS-CEO | บทบาท: ผู้นำประสานงานกลาง</p>
+                <div className="text-xs text-[#c8d8f0] leading-relaxed">
+                  รับคำสั่งจากผู้ใช้ สั่งการวิเคราะห์ไปหา Chart AI, Risk AI และ News AI แบบขนาน รวบรวมสรุปผลโหวตและแผนเข้าตลาดเพื่อส่งคำขออนุมัติเทรด (Approve/Reject) หรือประมวลผลระบบเทรดอัตโนมัติ
+                </div>
               </div>
 
-              <div className="bg-[#111520] border border-[#1e2d45] rounded-xl p-4 space-y-2">
-                <h3 className="text-sm font-bold text-[#34d399] flex items-center gap-1.5">📊 AGENT 2: Chart AI (Technical Analyst)</h3>
-                <p className="text-[10px] text-[#7a9bbf]">ชื่อรหัส: NOVA-CHART | บทบาท: วิเคราะห์แนวโน้มราคา</p>
-                <div className="text-xs text-[#94a3b8]">Top-down analysis, คำนวณ RSI, EMA50 vs EMA200 และ Confluence score ต่ำกว่า 3/5 ห้ามปล่อยสัญญาณ</div>
-                <pre className="bg-[#070a0f] border border-[#1e2d45] p-2 text-[10px] text-emerald-400 max-h-24 overflow-y-auto font-mono">
-{`Technical Analysis:
-- Confluence < 3/5 = WAIT
-- RSI > 80 ห้ามสั่ง BUY`}
-                </pre>
+              {/* Agent 2 */}
+              <div className="bg-white/5 border border-white/10 rounded-xl p-4 space-y-2 backdrop-blur-md hover:border-emerald-500/30 transition-all duration-300">
+                <h3 className="text-sm font-bold text-[#34d399] flex items-center gap-1.5 font-mono">📊 AGENT 2: Chart AI</h3>
+                <p className="text-[10px] text-[#7a9bbf] font-mono">ชื่อรหัส: NOVA-CHART | บทบาท: นักวิเคราะห์เทคนิค</p>
+                <div className="text-xs text-[#c8d8f0] leading-relaxed">
+                  ประเมินแนวโน้มราคาทางเทคนิค คำนวณอินดิเคเตอร์เชิงซ้อน (RSI, ATR, Trend, EMA) และระบุแนวรับแนวต้าน พร้อมสรุปเป็นระดับความมั่นใจเทคนิค (Confluence Score)
+                </div>
               </div>
 
-              <div className="bg-[#111520] border border-[#1e2d45] rounded-xl p-4 space-y-2">
-                <h3 className="text-sm font-bold text-[#f87171] flex items-center gap-1.5">🛡️ AGENT 3: Risk AI (The Guardian)</h3>
-                <p className="text-[10px] text-[#7a9bbf]">ชื่อรหัส: SHIELD-RISK | บทบาท: ผู้คุมเกณฑ์เสี่ยงพอร์ต</p>
-                <div className="text-xs text-[#94a3b8]">คำนวณ Lot size, ป้องกันการขาดทุนสะสม Drawdown เกิน 3% ต่อวัน และบริหาร Risk Limit ไม้ละ 2%</div>
-                <pre className="bg-[#070a0f] border border-[#1e2d45] p-2 text-[10px] text-emerald-400 max-h-24 overflow-y-auto font-mono">
-{`Risk Controls:
-- Risk > 2% per trade = BLOCK
-- ไม่มี Stop loss = BLOCK`}
-                </pre>
+              {/* Agent 3 */}
+              <div className="bg-white/5 border border-white/10 rounded-xl p-4 space-y-2 backdrop-blur-md hover:border-emerald-500/30 transition-all duration-300">
+                <h3 className="text-sm font-bold text-[#f87171] flex items-center gap-1.5 font-mono">🛡️ AGENT 3: Risk AI</h3>
+                <p className="text-[10px] text-[#7a9bbf] font-mono">ชื่อรหัส: SHIELD-RISK | บทบาท: ผู้คุมความเสี่ยงพอร์ต</p>
+                <div className="text-xs text-[#c8d8f0] leading-relaxed">
+                  คำนวณขนาดไม้ (Lot Size) ที่เหมาะสมตามความเสี่ยง ตรวจสอบเกณฑ์ป้องกันความเสี่ยงสูงสุดต่อไม้สูงสุด 2% ป้องกันการขาดทุนสะสม (Daily Drawdown) และหยุดการเทรดหากชนขีดจำกัด
+                </div>
               </div>
 
-              <div className="bg-[#111520] border border-[#1e2d45] rounded-xl p-4 space-y-2">
-                <h3 className="text-sm font-bold text-[#22d3ee] flex items-center gap-1.5">💰 AGENT 4: Finance AI (CFO)</h3>
-                <p className="text-[10px] text-[#7a9bbf]">ชื่อรหัส: ATLAS-FINANCE | บทบาท: บัญชีและสรุปพอร์ตรวม</p>
-                <div className="text-xs text-[#94a3b8]">ประมวลผล P&L รายดีล ยอดเงินคงคลังสินทรัพย์ และแปลงข้อมูลยิง Webhook สมุดรายวัน ERP</div>
-                <pre className="bg-[#070a0f] border border-[#1e2d45] p-2 text-[10px] text-emerald-400 max-h-24 overflow-y-auto font-mono">
-{`ERP Integration:
-- Sync event: trade.closed | pnl_realized
-- Sync Net Worth MT5 + Binance`}
-                </pre>
+              {/* Agent 4 */}
+              <div className="bg-white/5 border border-white/10 rounded-xl p-4 space-y-2 backdrop-blur-md hover:border-emerald-500/30 transition-all duration-300">
+                <h3 className="text-sm font-bold text-[#fbbf24] flex items-center gap-1.5 font-mono">🎯 AGENT 4: Strategy AI</h3>
+                <p className="text-[10px] text-[#7a9bbf] font-mono">ชื่อรหัส: ORACLE-STRATEGY | บทบาท: ผู้วางกลยุทธ์ตามสภาวะ</p>
+                <div className="text-xs text-[#c8d8f0] leading-relaxed">
+                  วิเคราะห์ Market Regime คัดกรองและปรับสภาวะการเทรดตามช่วงเวลาดัชนี (ADX, Volatility) เพื่อวางกฎการส่งออเดอร์และการวางแผน Stop Loss/Take Profit ที่เหมาะสม
+                </div>
               </div>
 
-              <div className="bg-[#111520] border border-[#1e2d45] rounded-xl p-4 space-y-2">
-                <h3 className="text-sm font-bold text-[#f97316] flex items-center gap-1.5">🔔 AGENT 5: Alert AI (Sentinel)</h3>
-                <p className="text-[10px] text-[#7a9bbf]">ชื่อรหัส: SENTINEL-ALERT | บทบาท: เฝ้าระวังฉุกเฉินและดัชนีข่าว</p>
-                <div className="text-xs text-[#94a3b8]">ตรวจจับระดับวอลลุ่มผันผวนรุนแรง, ข่าว High-impact ใน 30 นาที และ Margin level วิกฤติ ต่ำกว่า 200%</div>
-                <pre className="bg-[#070a0f] border border-[#1e2d45] p-2 text-[10px] text-emerald-400 max-h-24 overflow-y-auto font-mono">
-{`High-impact Alert:
-- Margin < 200% = HIGH ALERT
-- แจ้งปิดออเดอร์ด่วน`}
-                </pre>
+              {/* Agent 5 */}
+              <div className="bg-white/5 border border-white/10 rounded-xl p-4 space-y-2 backdrop-blur-md hover:border-emerald-500/30 transition-all duration-300">
+                <h3 className="text-sm font-bold text-[#f97316] flex items-center gap-1.5 font-mono">📰 AGENT 5: News AI</h3>
+                <p className="text-[10px] text-[#7a9bbf] font-mono">ชื่อรหัส: ECHO-NEWS | บทบาท: นักสแกนอารมณ์ข่าว</p>
+                <div className="text-xs text-[#c8d8f0] leading-relaxed">
+                  สแกนหาข่าวด่วน ข้อมูลเศรษฐกิจรอบโลก ดึงค่า Sentiment ด้วย FinBERT เพื่อกรองผลลบ/ผลบวกในการลงทุน และบล็อกคำสั่งซื้อขายในช่วงเวลาข่าวผันผวนระดับสูง (High-impact News)
+                </div>
               </div>
 
-              <div className="bg-[#111520] border border-[#1e2d45] rounded-xl p-4 space-y-2">
-                <h3 className="text-sm font-bold text-[#fbbf24] flex items-center gap-1.5">🎯 AGENT 6: Strategy AI (Oracle)</h3>
-                <p className="text-[10px] text-[#7a9bbf]">ชื่อรหัส: ORACLE-STRATEGY | บทบาท: วางสภาวะระบบเทรด</p>
-                <div className="text-xs text-[#94a3b8]">ประเมินและคัดกรองระบบเทรดตามค่าดัชนี ADX (Trending market / Sideways / Volatile pre-news)</div>
-                <pre className="bg-[#070a0f] border border-[#1e2d45] p-2 text-[10px] text-emerald-400 max-h-24 overflow-y-auto font-mono">
-{`Trending (ADX > 25): Crossover/Pullback
-Sideways (ADX < 20): Range/Rebound`}
-                </pre>
+              {/* Agent 6 */}
+              <div className="bg-white/5 border border-white/10 rounded-xl p-4 space-y-2 backdrop-blur-md hover:border-emerald-500/30 transition-all duration-300">
+                <h3 className="text-sm font-bold text-[#22d3ee] flex items-center gap-1.5 font-mono">💰 AGENT 6: Finance AI</h3>
+                <p className="text-[10px] text-[#7a9bbf] font-mono">ชื่อรหัส: ATLAS-FINANCE | บทบาท: ฝ่ายการเงิน & ERP</p>
+                <div className="text-xs text-[#c8d8f0] leading-relaxed">
+                  มอนิเตอร์และสรุปยอดคงเหลือของแต่ละพอร์ต คำนวณ P&L รายดีล ยอดสะสม ค่าธรรมเนียมโบรกเกอร์ และภาษีสะสมเพื่อส่ง Webhook บันทึกบัญชีแยกประเภท ERP กลางทันทีที่มีธุรกรรม
+                </div>
               </div>
+
+              {/* Agent 7 */}
+              <div className="bg-white/5 border border-white/10 rounded-xl p-4 space-y-2 backdrop-blur-md hover:border-emerald-500/30 transition-all duration-300">
+                <h3 className="text-sm font-bold text-[#a855f7] flex items-center gap-1.5 font-mono">🔍 AGENT 7: Audit AI</h3>
+                <p className="text-[10px] text-[#7a9bbf] font-mono">ชื่อรหัส: VIGIL-AUDIT | บทบาท: ผู้สอบบัญชีความถูกต้อง</p>
+                <div className="text-xs text-[#c8d8f0] leading-relaxed">
+                  ตรวจสอบความสม่ำเสมอและความถูกต้องของธุรกรรม (Consistency Check) เทียบประวัติการส่งคำสั่งซื้อขายจริงใน DB กับระบบ ERP บัญชีแยกประเภท เพื่อคัดกรองข้อมูลผิดพลาด
+                </div>
+              </div>
+
+              {/* Agent 8 */}
+              <div className="bg-white/5 border border-white/10 rounded-xl p-4 space-y-2 backdrop-blur-md hover:border-emerald-500/30 transition-all duration-300">
+                <h3 className="text-sm font-bold text-[#818cf8] flex items-center gap-1.5 font-mono">🤖 AGENT 8: EA Bot</h3>
+                <p className="text-[10px] text-[#7a9bbf] font-mono">ชื่อรหัส: APEX-EA | บทบาท: ผู้ส่งคำสั่งเทรด</p>
+                <div className="text-xs text-[#c8d8f0] leading-relaxed">
+                  จัดการเชื่อมต่อ API นำแผนงานส่งออเดอร์ (Market Order) เพื่อเปิด/ปิดคำสั่งจริงที่ Broker (MT5 หรือ Binance API) เฝ้าติดตาม Trailing Stop, SL และ TP อย่างใกล้ชิด
+                </div>
+              </div>
+
+              {/* Agent 9 */}
+              <div className="bg-white/5 border border-white/10 rounded-xl p-4 space-y-2 backdrop-blur-md hover:border-emerald-500/30 transition-all duration-300">
+                <h3 className="text-sm font-bold text-[#c084fc] flex items-center gap-1.5 font-mono">📋 AGENT 9: Report AI</h3>
+                <p className="text-[10px] text-[#7a9bbf] font-mono">ชื่อรหัส: SCRIBE-REPORT | บทบาท: ผู้จัดทำรายงานสรุป</p>
+                <div className="text-xs text-[#c8d8f0] leading-relaxed">
+                  สรุปผลลัพธ์การเทรด อัตราส่วนชนะ (Win Rate), อัตราผลตอบแทนต่อความเสี่ยง (Profit Factor), สถิติ Max Drawdown และรวบรวมตัวชี้วัดประสิทธิภาพ จัดทำรายงานภาพรวมพอร์ต
+                </div>
+              </div>
+
             </div>
           </div>
 
-          {/* TAB 3: 📋 Workflow Board - Multi-Agent Flow Diagram */}
-          <div className={`flex-1 overflow-y-auto p-6 md:p-8 bg-[#080c12] space-y-6 ${activeMenu === "Workflow Board" ? "block" : "hidden"}`}>
+          {/* TAB 3: 📋 Workflow Board - Multi-Agent Flow Diagram & Thai Guide */}
+          <div className={`flex-1 overflow-y-auto p-6 md:p-8 bg-[#000000] space-y-6 ${activeMenu === "Workflow Board" ? "block" : "hidden"}`}>
             <div className="border-b border-[#1e2d45] pb-4">
-              <h2 className="text-xl font-bold text-white">🔄 สถิติกระบวนการ Multi-Agent Flow แบบสมบูรณ์</h2>
-              <p className="text-xs text-[#7a9bbf] mt-1">เส้นทางประมวลผลสัญญาณเทรดและส่งคืนบัญชี Team ERP</p>
+              <h2 className="text-xl font-bold text-white">📋 คู่มือระบบ & ประวัติธุรกรรมตามวันที่ (Workflow & Trade History)</h2>
+              <p className="text-xs text-[#7a9bbf] mt-1">คู่มือการใช้งานระบบเทรดอัจฉริยะภาษาไทย และการเรียกดูประวัติการเทรดแยกตามวันเดือนปี</p>
             </div>
 
-            <div className="bg-[#111520] border border-[#1e2d45] rounded-xl p-6 space-y-4">
-              <div className="text-xs text-[#94a3b8]">
-                ขั้นตอนทำงานอย่างเป็นระบบ (Safe Execution Flow) จากข้อความ /analyze หรือปุ่มกดยืนยันใน Telegram:
+            {/* 1. คู่มือการใช้งานภาษาไทย */}
+            <div className="bg-white/5 border border-white/10 rounded-xl p-6 space-y-4 backdrop-blur-md">
+              <h3 className="text-sm font-bold text-emerald-400 flex items-center gap-1.5 font-mono">📖 คู่มือการใช้งานระบบ (System Operation Guide)</h3>
+              
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 text-xs text-[#c8d8f0] leading-relaxed">
+                <div className="bg-black/40 border border-white/5 p-4 rounded-lg space-y-3">
+                  <div className="text-emerald-400 font-bold font-mono">🔄 โหมดการทำงานของระบบ (Operation Modes)</div>
+                  <ul className="list-disc list-inside space-y-2 text-[#a3b3cc]">
+                    <li>
+                      <span className="text-white font-bold">โหมดธรรมดา (Watch Mode):</span> 
+                      ระบบจะไม่ออกออเดอร์เองโดยอัตโนมัติ เมื่อวิเคราะห์พบสัญญาณจะส่งมาแสดงที่หน้าต่างบอร์ดหรือ Telegram ผู้ใช้ต้องทำการกดปุ่ม <span className="text-[#10b981] font-bold">"อนุมัติ"</span> ด้วยตนเอง โดยจะซื้อทุกไม้ทันทีตามจำนวนที่กดโดยไม่จำกัดจำนวนไม้เปิดคู่ขนาน (รัวกดได้ทันที)
+                    </li>
+                    <li>
+                      <span className="text-[#22d3ee] font-bold">โหมดอัตโนมัติ (Auto Mode):</span>
+                      ระบบ AI และ Risk Engine จะตรวจสอบเกณฑ์ความปลอดภัยอย่างเข้มงวดและอนุมัติส่งคำสั่งซื้อขายจริง (Auto Execution) ไปยัง Broker ทันทีตามที่บอทประเมินว่าเหมาะสมและผ่านเกณฑ์จำกัดความเสี่ยง
+                    </li>
+                  </ul>
+                </div>
+
+                <div className="bg-black/40 border border-white/5 p-4 rounded-lg space-y-3">
+                  <div className="text-[#f87171] font-bold font-mono">🛡️ กฎความเสี่ยง 6 ประการ (Risk Engine Guardrails)</div>
+                  <ol className="list-decimal list-inside space-y-1 text-[#a3b3cc]">
+                    <li>มีสัญญาณซื้อขายจริง (<span className="text-white">ไม่ใช่ WAIT</span>)</li>
+                    <li>ความเสี่ยงต่อไม้ไม่เกิน <span className="text-white">2.0%</span> ของพอร์ต (2% Rule)</li>
+                    <li>จุดตัดขาดทุนขั้นต่ำ (Stop Loss) <span className="text-white">&ge; 10 pips</span></li>
+                    <li>ค่าสเปรดโบรกเกอร์ (Spread) <span className="text-white">ไม่กว้างเกินเกณฑ์สูงสุด (3.0)</span></li>
+                    <li>มูลค่าถือครองสินทรัพย์รวมทั้งพอร์ต <span className="text-white">ไม่เกิน 20%</span></li>
+                    <li>สถานะระบบความปลอดภัย <span className="text-white">Circuit Breaker</span> ปิดปกติ</li>
+                  </ol>
+                </div>
               </div>
-              <div className="bg-[#070a0f] p-4 rounded border border-[#1e2d45] text-xs font-mono space-y-2.5 leading-relaxed text-[#c8d8f0]">
-                <div><span className="text-[#fbbf24] font-bold">[1]</span> สั่งการผ่านบอทเทเลแกรมจริง / analyze XAUUSD</div>
-                <div><span className="text-[#fbbf24] font-bold">[2]</span> CEO Agent ประมวลผลและแจกงานขนานไปหา Chart AI (วิเคราะห์เทคนิค), Risk AI (คำนวณความเสี่ยง), และ News AI (สแกนข่าวเศรษฐกิจ)</div>
-                <div><span className="text-[#fbbf24] font-bold">[3]</span> CEO Agent ส่งสรุปแผนการเทรดกลับไปที่แชทเทเลแกรม พร้อมสร้างปุ่ม [✅ อนุมัติ] / [❌ ปฏิเสธ]</div>
-                <div><span className="text-[#fbbf24] font-bold">[4]</span> ผู้ใช้กดปุ่มอนุมัติ &rarr; บอทตรวจ Callback query ยิงสัญญาจริงเข้าตลาดผ่าน EA Bot (MT5) หรือ Binance API</div>
-                <div><span className="text-[#fbbf24] font-bold">[5]</span> ดีลปิด &rarr; Finance AI บันทึกกำไรขาดทุนสะสม และประมาณภาษี Team Tax เข้าคลัง ERP อัตโนมัติ</div>
+
+              <div className="bg-black/60 p-4 rounded border border-white/5 text-xs font-mono space-y-2.5 leading-relaxed text-[#c8d8f0]">
+                <div className="text-slate-400 border-b border-white/5 pb-1 mb-1 font-bold">🚀 ลำดับขั้นตอนการทำงาน (Safe Execution Flow)</div>
+                <div><span className="text-[#fbbf24] font-bold">[1] สั่งการ / ค้นหาสัญญาณ:</span> ระบบสแกนหาทิศทางราคา หรือรับคำสั่งวิเคราะห์ทางเทคนิค</div>
+                <div><span className="text-[#fbbf24] font-bold">[2] CEO Agent ประมวลผล:</span> CEO จะสั่งให้ Chart AI (กราฟ), Risk AI (คำนวณความเสี่ยง/Lot), News AI (ดึงข่าวด่วน) ประมวลผลร่วมกัน</div>
+                <div><span className="text-[#fbbf24] font-bold">[3] ตัดสินใจ & ขออนุมัติ:</span> ในโหมด Watch บอทส่งสัญญาณมาขอความเห็นชอบบนเว็บ/Telegram หรืออนุมัติยิงตลาดทันทีหากเปิดโหมด Auto</div>
+                <div><span className="text-[#fbbf24] font-bold">[4] บันทึกสมุดบัญชี ERP:</span> หลังจากปิดดีลสำเร็จ Finance AI จะยิงข้อมูล P&L และยอดภาษีเข้าระบบ ERP บัญชีแยกประเภททันที</div>
+              </div>
+            </div>
+
+            {/* 2. ประวัติการเทรดกรองตามวันที่ */}
+            <div className="bg-white/5 border border-white/10 rounded-xl p-6 space-y-4 backdrop-blur-md">
+              <div className="flex flex-wrap items-center justify-between gap-4 border-b border-white/5 pb-3">
+                <h3 className="text-sm font-bold text-[#fbbf24] flex items-center gap-1.5 font-mono">📅 ประวัติการเทรดแยกตามวันเดือนปี (Historical Trades Calendar)</h3>
+                
+                {/* Date Picker */}
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-[#7a9bbf]">เลือกวันที่:</span>
+                  <input 
+                    type="date" 
+                    value={filterDate}
+                    onChange={(e) => setFilterDate(e.target.value)}
+                    className="bg-black/60 border border-white/10 rounded px-2.5 py-1 text-xs text-white focus:outline-none focus:border-emerald-400 font-mono transition"
+                  />
+                  {filterDate && (
+                    <button 
+                      onClick={() => setFilterDate("")}
+                      className="text-[10px] text-red-400 hover:text-red-300 px-2 py-1 bg-red-950/20 border border-red-800/30 rounded font-bold"
+                    >
+                      ล้างตัวกรอง
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Table */}
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse text-xs font-mono">
+                  <thead>
+                    <tr className="border-b border-white/10 text-[#7a9bbf]">
+                      <th className="py-2.5 px-3">วันเวลา (Opened At)</th>
+                      <th className="py-2.5 px-3">สินทรัพย์</th>
+                      <th className="py-2.5 px-3">ประเภท</th>
+                      <th className="py-2.5 px-3">ขนาด (Lot)</th>
+                      <th className="py-2.5 px-3">ราคาเข้า</th>
+                      <th className="py-2.5 px-3">ราคาออก</th>
+                      <th className="py-2.5 px-3">กำไร/ขาดทุน (USD)</th>
+                      <th className="py-2.5 px-3">สถานะ</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(() => {
+                      const filtered = filterDate 
+                        ? orders.filter(o => o.opened_at && o.opened_at.startsWith(filterDate))
+                        : orders;
+                      
+                      if (filtered.length === 0) {
+                        return (
+                          <tr>
+                            <td colSpan={8} className="py-8 text-center text-slate-500">
+                              ไม่พบประวัติการเทรดในวันที่เลือก
+                            </td>
+                          </tr>
+                        );
+                      }
+
+                      return filtered.map((ord, idx) => (
+                        <tr key={idx} className="border-b border-white/5 hover:bg-white/5 transition-colors">
+                          <td className="py-2.5 px-3 text-[#a3b3cc]">
+                            {ord.opened_at ? new Date(ord.opened_at).toLocaleString('th-TH') : '-'}
+                          </td>
+                          <td className="py-2.5 px-3 text-white font-bold">{ord.symbol}</td>
+                          <td className="py-2.5 px-3">
+                            <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                              ord.action === "BUY" ? "bg-emerald-500/10 text-emerald-400" : "bg-red-500/10 text-red-400"
+                            }`}>
+                              {ord.action}
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-3 text-slate-300">{ord.volume}</td>
+                          <td className="py-2.5 px-3 text-slate-300">${ord.entry_price.toFixed(2)}</td>
+                          <td className="py-2.5 px-3 text-slate-300">
+                            {ord.exit_price > 0 ? `$${ord.exit_price.toFixed(2)}` : '-'}
+                          </td>
+                          <td className="py-2.5 px-3">
+                            {ord.status === "CLOSED" ? (
+                              <span className={`font-bold ${ord.pnl >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+                                {ord.pnl >= 0 ? `+$${ord.pnl.toFixed(2)}` : `-$${Math.abs(ord.pnl).toFixed(2)}`}
+                              </span>
+                            ) : (
+                              <span className="text-slate-500 font-bold">Running</span>
+                            )}
+                          </td>
+                          <td className="py-2.5 px-3">
+                            <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                              ord.status === "CLOSED" 
+                                ? "bg-slate-800 text-slate-400" 
+                                : "bg-emerald-950 text-emerald-400 animate-pulse"
+                            }`}>
+                              {ord.status}
+                            </span>
+                          </td>
+                        </tr>
+                      ));
+                    })()}
+                  </tbody>
+                </table>
               </div>
             </div>
           </div>
 
           {/* TAB 4: 💬 Chat Center (Full screen Chat Log View) */}
-          <div className={`flex-1 flex flex-col overflow-hidden bg-[#080c12] ${activeMenu === "Chat Center" ? "block" : "hidden"}`}>
+          <div className={`flex-1 flex flex-col overflow-hidden bg-[#000000] ${activeMenu === "Chat Center" ? "block" : "hidden"}`}>
             <div className="p-4 border-b border-[#1e2d45] bg-[#0f172a]/40 flex justify-between items-center">
               <div>
                 <h2 className="text-md font-bold text-white">💬 ห้องเสวนากลุ่มวิเคราะห์สะสม (Team Chat Terminal)</h2>
@@ -2078,7 +2347,7 @@ Sideways (ADX < 20): Range/Rebound`}
           </div>
 
           {/* TAB 5: 📊 Analytics (Live Stocks & Cryptos + Real Macro News) */}
-          <div className={`flex-1 overflow-y-auto p-6 md:p-8 bg-[#080c12] space-y-6 ${activeMenu === "Analytics" ? "block" : "hidden"}`}>
+          <div className={`flex-1 overflow-y-auto p-6 md:p-8 bg-[#000000] space-y-6 ${activeMenu === "Analytics" ? "block" : "hidden"}`}>
             <div className="border-b border-[#1e2d45] pb-4">
               <h2 className="text-xl font-bold text-white">📊 ศูนย์วิเคราะห์ตลาดแบบบูรณาการ (Analytics Desk)</h2>
               <p className="text-xs text-[#7a9bbf] mt-1">ฟีดราคาสดจากโบรกเกอร์ MT5 และ Binance CEX พร้อมสรุปข่าวจริงทั่วโลก</p>
@@ -2126,7 +2395,7 @@ Sideways (ADX < 20): Range/Rebound`}
           </div>
 
           {/* TAB 6: ⚠️ Risk Monitor (Hard Rules & Risk check audit) */}
-          <div className={`flex-1 overflow-y-auto p-6 md:p-8 bg-[#080c12] space-y-6 ${activeMenu === "Risk Monitor" ? "block" : "hidden"}`}>
+          <div className={`flex-1 overflow-y-auto p-6 md:p-8 bg-[#000000] space-y-6 ${activeMenu === "Risk Monitor" ? "block" : "hidden"}`}>
             <div className="border-b border-[#1e2d45] pb-4">
               <h2 className="text-xl font-bold text-white">🛡️ สรุปกฎระเบียบความเสี่ยงพอร์ต (Risk Monitor & Compliance Audit)</h2>
               <p className="text-xs text-[#7a9bbf] mt-1">มอนิเตอร์ระดับความปลอดภัย การตั้งค่ากฎเหล็ก และประวัติการทำออดิตความเสี่ยง</p>
@@ -2188,79 +2457,96 @@ Sideways (ADX < 20): Range/Rebound`}
           </div>
 
           {/* TAB 7: 📈 Reports (Ledger / P&L / Tax details) */}
-          <div className={`flex-1 overflow-y-auto p-6 md:p-8 bg-[#080c12] space-y-6 ${activeMenu === "Reports" ? "block" : "hidden"}`}>
-            <div className="border-b border-[#1e2d45] pb-4">
-              <h2 className="text-xl font-bold text-white">📊 รายงานบัญชีและระเบียบภาษีคลัง (Team ERP Ledger & Tax Sheet)</h2>
-              <p className="text-xs text-[#7a9bbf] mt-1">สมุดรายการเดบิต/เครดิต และประมาณการการชำระภาษีสะสมในไทย</p>
+          <div className={`flex-1 overflow-y-auto p-6 md:p-8 bg-[#000000] space-y-6 ${activeMenu === "Reports" ? "block" : "hidden"}`}>
+            <div className="border-b border-[#1e2d45] pb-4 flex justify-between items-center flex-wrap gap-4">
+              <div>
+                <h2 className="text-xl font-bold text-white">📊 รายงานบัญชีและระเบียบภาษีคลัง (Team ERP Ledger & Tax Sheet)</h2>
+                <p className="text-xs text-[#7a9bbf] mt-1">สมุดรายการเดบิต/เครดิต และประมาณการการชำระภาษีสะสมในไทย</p>
+              </div>
+              <button
+                onClick={handleResetData}
+                className="text-xs px-3 py-1.5 bg-red-600/20 hover:bg-red-600 border border-red-500/30 hover:border-red-500 text-red-200 hover:text-white rounded-lg transition-all duration-300 font-bold flex items-center gap-1.5 shadow-[0_0_10px_rgba(239,68,68,0.1)] hover:shadow-[0_0_15px_rgba(239,68,68,0.3)] font-sans"
+              >
+                🗑️ ล้างประวัติการเทรด & บัญชี ERP
+              </button>
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
               
               {/* รายงานเดบิต เครดิต ERP */}
-              <div className="lg:col-span-2 bg-[#111520] border border-[#1e2d45] rounded-xl p-4 space-y-3">
-                <div className="text-xs text-white font-bold uppercase tracking-wider">สมุดบัญชีแยกประเภททั่วไป (General Ledger Double-Entry)</div>
-                <div className="space-y-2 max-h-[400px] overflow-y-auto pr-1">
-                  {ledger.map((tx, idx) => (
-                    <div key={idx} className="bg-[#070a0f] border border-[#1e2d45] p-3 rounded-lg text-xs space-y-2 font-mono">
-                      <div className="flex justify-between text-[10px] text-slate-500">
-                        <span>TX: {tx.id}</span>
-                        <span>{new Date(tx.timestamp).toLocaleString()}</span>
-                      </div>
-                      <div className="font-semibold text-slate-200">{tx.description}</div>
-                      <div className="grid grid-cols-2 gap-2 text-[10px] border-t border-slate-800 pt-1.5">
-                        <div className="text-emerald-400">
-                          Dr: {tx.debit.account}
-                          <div className="font-bold text-white mt-0.5">${tx.debit.amount.toLocaleString()}</div>
-                        </div>
-                        <div className="text-[#fbbf24]">
-                          Cr: {tx.credit.account}
-                          <div className="font-bold text-white mt-0.5">${tx.credit.amount.toLocaleString()}</div>
-                        </div>
-                      </div>
+              <div className="lg:col-span-2 bg-white/5 border border-white/10 rounded-xl p-5 space-y-4 backdrop-blur-md">
+                <div className="text-xs text-white font-bold uppercase tracking-wider font-mono flex justify-between items-center">
+                  <span>สมุดบัญชีแยกประเภททั่วไป (General Ledger Double-Entry)</span>
+                  <span className="text-[10px] text-slate-500 font-normal font-sans">ล่าสุด: {ledger.length} รายการ</span>
+                </div>
+                <div className="space-y-3 max-h-[450px] overflow-y-auto pr-1">
+                  {ledger.length === 0 ? (
+                    <div className="text-center text-slate-500 py-24 text-xs font-sans">
+                      ยังไม่มีรายการบันทึกในสมุดบัญชีแยกประเภท
                     </div>
-                  ))}
+                  ) : (
+                    ledger.map((tx, idx) => (
+                      <div key={idx} className="bg-black/60 border border-white/5 p-4 rounded-lg text-xs space-y-2.5 font-mono hover:border-white/10 transition-colors">
+                        <div className="flex justify-between text-[10px] text-slate-500">
+                          <span>TX ID: {tx.id}</span>
+                          <span>{new Date(tx.timestamp).toLocaleString('th-TH')}</span>
+                        </div>
+                        <div className="font-semibold text-slate-200">{tx.description}</div>
+                        <div className="grid grid-cols-2 gap-4 text-[10px] border-t border-white/5 pt-2">
+                          <div className="text-emerald-400">
+                            Dr: {tx.debit.account}
+                            <div className="font-bold text-white text-xs mt-0.5">${tx.debit.amount.toLocaleString()}</div>
+                          </div>
+                          <div className="text-amber-400">
+                            Cr: {tx.credit.account}
+                            <div className="font-bold text-white text-xs mt-0.5">${tx.credit.amount.toLocaleString()}</div>
+                          </div>
+                        </div>
+                      </div>
+                    ))
+                  )}
                 </div>
               </div>
 
               {/* แบบสรุปภาษี Team Tax */}
-              <div className="bg-[#111520] border border-[#1e2d45] rounded-xl p-4 space-y-4">
-                <div className="text-xs text-white font-bold uppercase tracking-wider">แบบสรุปการยื่นภาษีสะสม (Team Tax Summary)</div>
+              <div className="bg-white/5 border border-white/10 rounded-xl p-5 space-y-5 backdrop-blur-md">
+                <div className="text-xs text-white font-bold uppercase tracking-wider font-mono">แบบสรุปการยื่นภาษีสะสม (Team Tax Summary)</div>
                 {taxSummary ? (
-                  <div className="text-xs space-y-3 font-mono">
-                    <div className="flex justify-between py-1 border-b border-slate-800">
-                      <span className="text-slate-400">กำไรการลงทุนสะสม:</span>
-                      <span className="font-bold text-[#10b981]">${taxSummary.accumulatedPnL.toFixed(2)}</span>
+                  <div className="text-xs space-y-4 font-mono">
+                    <div className="flex justify-between py-2 border-b border-white/5">
+                      <span className="text-slate-400">กำไรสะสม (Accumulated PnL):</span>
+                      <span className="font-bold text-emerald-400">${taxSummary.accumulatedPnL.toLocaleString()}</span>
                     </div>
-                    <div className="flex justify-between py-1 border-b border-slate-800">
-                      <span className="text-slate-400">ค่าธรรมเนียมธุรกรรมสะสม:</span>
-                      <span className="font-bold text-[#ef4444]">${taxSummary.accumulatedFees.toFixed(2)}</span>
+                    <div className="flex justify-between py-2 border-b border-white/5">
+                      <span className="text-slate-400">ค่าธรรมเนียมสะสม (Accumulated Fees):</span>
+                      <span className="font-bold text-red-400">${taxSummary.accumulatedFees.toLocaleString()}</span>
                     </div>
-                    <div className="flex justify-between py-1 border-b border-slate-800">
-                      <span className="text-slate-400">รายได้สุทธิรอคำนวณ:</span>
-                      <span className="font-bold text-white">${taxSummary.taxableIncome.toFixed(2)}</span>
+                    <div className="flex justify-between py-2 border-b border-white/5">
+                      <span className="text-slate-400">รายได้สุทธิเพื่อคำนวณ (Taxable Income):</span>
+                      <span className="font-bold text-white">${taxSummary.taxableIncome.toLocaleString()}</span>
                     </div>
-                    <div className="flex justify-between py-1 border-b border-slate-800">
-                      <span className="text-[#22d3ee] font-bold">ภาษีซื้อเคลมคืน (VAT 7%):</span>
-                      <span className="font-bold text-[#22d3ee]">+${taxSummary.inputVatClaimable.toFixed(2)}</span>
+                    <div className="flex justify-between py-2 border-b border-white/5">
+                      <span className="text-emerald-400 font-bold">ภาษีซื้อขอคืนสะสม (VAT {taxSummary.vatRate}):</span>
+                      <span className="font-bold text-emerald-400">+${taxSummary.inputVatClaimable.toLocaleString()}</span>
                     </div>
-                    <div className="flex justify-between py-1 border-b border-slate-800">
-                      <span className="text-[#ef4444]">ภาษีนิติบุคคลหักสะสม (20%):</span>
-                      <span className="font-bold text-[#ef4444]">-${taxSummary.estimatedIncomeTax.toFixed(2)}</span>
+                    <div className="flex justify-between py-2 border-b border-white/5">
+                      <span className="text-red-400 font-bold">ภาษีนิติบุคคลหักสะสม ({taxSummary.corporateTaxRate}):</span>
+                      <span className="font-bold text-red-400">-${taxSummary.estimatedIncomeTax.toLocaleString()}</span>
                     </div>
-                    <div className="p-3 bg-emerald-500/10 border border-emerald-500/25 rounded-lg flex justify-between items-center text-sm font-bold">
-                      <span className="text-[#34d399]">กำไรสุทธิหลังหักภาษี:</span>
-                      <span className="text-[#34d399] font-bold">${taxSummary.netAfterTax.toFixed(2)}</span>
+                    <div className="p-4 bg-emerald-500/10 border border-emerald-500/20 rounded-lg flex justify-between items-center text-sm font-bold mt-4 shadow-[0_0_15px_rgba(16,185,129,0.05)] font-sans">
+                      <span className="text-emerald-400">กำไรสุทธิหลังหักภาษี (Net profit):</span>
+                      <span className="text-emerald-400 text-base font-black">${taxSummary.netAfterTax.toLocaleString()}</span>
                     </div>
                   </div>
                 ) : (
-                  <div className="text-center text-slate-500 py-10 text-xs">ยังไม่มีข้อมูลภาษีสะสม</div>
+                  <div className="text-center text-slate-500 py-12 text-xs font-sans">ยังไม่มีข้อมูลภาษีสะสม</div>
                 )}
               </div>
             </div>
           </div>
 
           {/* TAB 8: 📈 Performance Dashboard */}
-          <div className={`flex-1 overflow-y-auto p-6 md:p-8 bg-[#080c12] space-y-6 ${activeMenu === "Performance Dashboard" ? "block" : "hidden"}`}>
+          <div className={`flex-1 overflow-y-auto p-6 md:p-8 bg-[#000000] space-y-6 ${activeMenu === "Performance Dashboard" ? "block" : "hidden"}`}>
             <div className="border-b border-[#1e2d45] pb-4">
               <h2 className="text-xl font-bold text-white">📈 AI Trading Performance Dashboard</h2>
               <p className="text-xs text-[#7a9bbf] mt-1">Live metrics from the trading engines.</p>
@@ -2325,7 +2611,7 @@ Sideways (ADX < 20): Range/Rebound`}
           </div>
 
           {/* TAB 9: ⚙️ Settings (Telegram Bot Config & constants) */}
-          <div className={`flex-1 overflow-y-auto p-6 md:p-8 bg-[#080c12] space-y-6 ${activeMenu === "Settings" ? "block" : "hidden"}`}>
+          <div className={`flex-1 overflow-y-auto p-6 md:p-8 bg-[#000000] space-y-6 ${activeMenu === "Settings" ? "block" : "hidden"}`}>
             <div className="border-b border-[#1e2d45] pb-4">
               <h2 className="text-xl font-bold text-white">⚙️ ตั้งค่าความปลอดภัยและบัญชาการระบบ (System Settings)</h2>
               <p className="text-xs text-[#7a9bbf] mt-1">กรอกข้อมูล Bot Token จริง และปรับแต่งพารามิเตอร์ตรวจสอบความเสี่ยงพอร์ต</p>
@@ -2525,7 +2811,7 @@ python main.py`}
             </div>
           </div>
 
-          <div className="flex-1 overflow-y-auto p-2 space-y-2 bg-[#080c12]/30">
+          <div className="flex-1 overflow-y-auto p-2 space-y-2 bg-[#000000]/30">
             {chatMsgs.map((msg, idx) => (
               <div key={idx} className="bg-[#111520] border border-[#1e2d45] rounded p-2 space-y-1">
                 <div className="flex items-center gap-1.5">

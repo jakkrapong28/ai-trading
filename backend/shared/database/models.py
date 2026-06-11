@@ -1,9 +1,9 @@
 import uuid
+import enum
+from datetime import datetime
 from sqlalchemy import Column, String, Float, DateTime, Enum, ForeignKey, Integer, JSON, Boolean
 from sqlalchemy.orm import relationship
 from backend.shared.database.core import Base
-from datetime import datetime
-import enum
 
 class MarketRegime(enum.Enum):
     BULL_HIGH_VOL = "BULL_HIGH_VOL"
@@ -12,6 +12,12 @@ class MarketRegime(enum.Enum):
     BEAR_LOW_VOL = "BEAR_LOW_VOL"
     SIDEWAYS_HIGH_VOL = "SIDEWAYS_HIGH_VOL"
     SIDEWAYS_LOW_VOL = "SIDEWAYS_LOW_VOL"
+    VOLATILE_HIGH_VOL = "VOLATILE_HIGH_VOL"
+    VOLATILE_LOW_VOL = "VOLATILE_LOW_VOL"
+    BULL = "BULL"
+    BEAR = "BEAR"
+    SIDEWAYS = "SIDEWAYS"
+    VOLATILE = "VOLATILE"
 
 class SignalAction(enum.Enum):
     BUY = "BUY"
@@ -23,14 +29,12 @@ class TradeAction(enum.Enum):
     SELL = "SELL"
 
 class TradeStatus(enum.Enum):
-    CREATED = "CREATED"
-    VALIDATED = "VALIDATED"
+    PENDING = "PENDING"
     OPEN = "OPEN"
     RUNNING = "RUNNING"
-    TP_HIT = "TP_HIT"
-    SL_HIT = "SL_HIT"
+    PARTIAL = "PARTIAL"
     CLOSED = "CLOSED"
-    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
 
 class Position(Base):
     __tablename__ = "positions"
@@ -46,12 +50,15 @@ class Trade(Base):
     position_id = Column(Integer, ForeignKey("positions.id"))
     ticker = Column(String, index=True)
     action = Column(Enum(TradeAction))
-    status = Column(Enum(TradeStatus), default=TradeStatus.CREATED)
+    status = Column(Enum(TradeStatus), default=TradeStatus.PENDING)
     lot_size = Column(Float)
     entry_price = Column(Float, nullable=True)
     exit_price = Column(Float, nullable=True)
-    stop_loss = Column(Float, nullable=True)
-    take_profit = Column(Float, nullable=True)
+    sl_price = Column(Float, nullable=True)
+    tp_price = Column(Float, nullable=True)
+    atr_at_entry = Column(Float, nullable=True)
+    confidence = Column(Float, nullable=True)
+    votes = Column(JSON, nullable=True)
     realized_pnl = Column(Float, nullable=True)
     pnl_percentage = Column(Float, nullable=True)
     opened_at = Column(DateTime, default=datetime.utcnow)
@@ -63,13 +70,13 @@ class AIDecisionJournal(Base):
     id = Column(Integer, primary_key=True, index=True)
     timestamp = Column(DateTime, default=datetime.utcnow, index=True)
     ticker = Column(String, index=True)
-    decision = Column(String) # e.g., "APPROVED", "REJECTED", "HOLD"
+    decision = Column(String) 
     signal_action = Column(Enum(SignalAction))
     confidence_score = Column(Float)
-    market_regime = Column(Enum(MarketRegime))
+    market_regime = Column(String) 
     sentiment_score = Column(Float)
     volatility_state = Column(Float)
-    reasons = Column(JSON) # List of strings explaining the decision
+    reasons = Column(JSON) 
     execution_result = Column(String, nullable=True)
 
 class PerformanceMetric(Base):
@@ -86,7 +93,7 @@ class MarketData(Base):
     __tablename__ = "market_data"
     id = Column(Integer, primary_key=True, index=True)
     ticker = Column(String, index=True)
-    timeframe = Column(String) # e.g., '1m', '5m', '1h'
+    timeframe = Column(String) 
     timestamp = Column(DateTime, index=True)
     open = Column(Float)
     high = Column(Float)
@@ -101,5 +108,46 @@ class NewsSentiment(Base):
     timestamp = Column(DateTime, default=datetime.utcnow)
     headline = Column(String)
     source = Column(String)
-    sentiment_score = Column(Float) # -1.0 to 1.0
-    confidence_score = Column(Float) # 0.0 to 1.0
+    sentiment_score = Column(Float) 
+    confidence_score = Column(Float) 
+
+class PortfolioSnapshot(Base):
+    __tablename__ = "portfolio_snapshots"
+    id = Column(Integer, primary_key=True, index=True)
+    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+    balance = Column(Float, default=0.0)
+    equity = Column(Float, default=0.0)
+    margin = Column(Float, default=0.0)
+    floating_pnl = Column(Float, default=0.0)
+    daily_pnl = Column(Float, default=0.0)
+    weekly_pnl = Column(Float, default=0.0)
+    monthly_pnl = Column(Float, default=0.0)
+    drawdown = Column(Float, default=0.0)
+
+class TradeLedger(Base):
+    __tablename__ = "trade_ledger"
+    id = Column(Integer, primary_key=True, index=True)
+    trade_id = Column(String, ForeignKey("trades.id"))
+    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+    event_type = Column(String) 
+    amount = Column(Float)
+    description = Column(String)
+
+class TaxLedger(Base):
+    __tablename__ = "tax_ledger"
+    id = Column(Integer, primary_key=True, index=True)
+    trade_id = Column(String, ForeignKey("trades.id"))
+    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+    tax_type = Column(String) 
+    amount = Column(Float)
+
+class ERPDeliveryRecord(Base):
+    __tablename__ = "erp_delivery_records"
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    trade_id = Column(String, index=True)
+    idempotency_key = Column(String, index=True, unique=True)
+    request_payload = Column(JSON)
+    response_code = Column(Integer, nullable=True)
+    response_body = Column(String, nullable=True)
+    status = Column(String, default="PENDING")
+    created_at = Column(DateTime, default=datetime.utcnow)

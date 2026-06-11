@@ -2,175 +2,209 @@ import asyncio
 import logging
 import os
 import httpx
-from datetime import datetime
-from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+from datetime import datetime, timezone
+from typing import Dict, List, Set, Any
 
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from backend.shared.events.core import EventBus, CH_NEWS
 from backend.shared.schema.events import NewsSentimentEvent
 
 logger = logging.getLogger("news-intelligence")
-analyzer = SentimentIntensityAnalyzer()
+vader_analyzer = SentimentIntensityAnalyzer()
 
-# Keywords mapping สำหรับแต่ละ ticker
+# Lazy loaded FinBERT pipeline
+finbert_pipeline = None
+
+def get_finbert():
+    global finbert_pipeline
+    if finbert_pipeline is None:
+        try:
+            from transformers import pipeline
+            logger.info("Loading FinBERT model into memory...")
+            finbert_pipeline = pipeline("text-classification", model="ProsusAI/finbert")
+            logger.info("FinBERT model loaded successfully.")
+        except Exception as e:
+            logger.error(f"Failed to load FinBERT model: {e}")
+            finbert_pipeline = "FAILED"
+    return finbert_pipeline
+
+def extract_sentiment(text: str) -> tuple[float, str]:
+    """
+    Returns (sentiment_score, source_model)
+    Attempts FinBERT first, falls back to VADER on failure or memory pressure.
+    """
+    pipeline_instance = get_finbert()
+    
+    if pipeline_instance and pipeline_instance != "FAILED":
+        try:
+            # FinBERT returns labels: positive, negative, neutral
+            result = pipeline_instance(text[:512])[0] # Truncate to 512 chars for FinBERT limits
+            label = result["label"]
+            score = result["score"]
+            
+            # Convert to -1 to 1 scale
+            if label == "positive":
+                sentiment = score
+            elif label == "negative":
+                sentiment = -score
+            else:
+                sentiment = 0.0
+                
+            return sentiment, "FinBERT"
+        except Exception as e:
+            logger.warning(f"FinBERT inference failed: {e}. Falling back to VADER.")
+            
+    # Fallback to VADER
+    scores = vader_analyzer.polarity_scores(text)
+    return scores["compound"], "VADER"
+
 TICKER_KEYWORDS = {
-    "BTCUSDT":  "bitcoin BTC crypto",
-    "ETHUSDT":  "ethereum ETH crypto",
-    "SOLUSDT":  "solana SOL crypto",
-    "BNBUSDT":  "binance BNB crypto",
-    "XAUUSD":   "gold price XAU inflation",
-    "EURUSD":   "EUR USD euro dollar forex",
-    "NVDA":     "nvidia NVDA AI chips GPU",
-    "AAPL":     "apple AAPL iphone earnings",
-    "MSFT":     "microsoft MSFT azure AI",
-    "TSLA":     "tesla TSLA EV electric vehicle",
-    "AMZN":     "amazon AMZN AWS ecommerce",
-    "GOOGL":    "google GOOGL alphabet AI search"
+    "BTCUSDT": "bitcoin BTC crypto", "ETHUSDT": "ethereum ETH crypto",
+    "SOLUSDT": "solana SOL crypto", "BNBUSDT": "binance BNB crypto",
+    "XAUUSD": "gold price XAU inflation", "EURUSD": "EUR USD euro dollar forex",
+    "NVDA": "nvidia NVDA AI chips GPU", "AAPL": "apple AAPL iphone earnings",
+    "MSFT": "microsoft MSFT azure AI", "TSLA": "tesla TSLA EV electric vehicle",
+    "AMZN": "amazon AMZN AWS ecommerce", "GOOGL": "google GOOGL alphabet AI search"
 }
 
-# Fallback headlines เมื่อไม่มี API key
-FALLBACK_HEADLINES = {
-    "BTCUSDT":  [
-        "Bitcoin maintains strong institutional demand amid ETF inflows",
-        "Crypto market shows resilience as bitcoin finds key support level",
-        "Bitcoin network hashrate reaches new all-time high"
-    ],
-    "ETHUSDT":  [
-        "Ethereum staking yields attract long-term investors",
-        "ETH price action consolidates near key resistance zone",
-        "Ethereum layer-2 ecosystem continues rapid expansion"
-    ],
-    "XAUUSD":   [
-        "Gold prices firm as central bank buying remains robust",
-        "Safe haven demand supports gold amid global uncertainty",
-        "Inflation concerns keep gold attractive for investors"
-    ],
-    "NVDA":     [
-        "Nvidia data center revenue continues record pace on AI demand",
-        "NVDA stock benefits from accelerating AI infrastructure spending",
-        "Nvidia announces next-generation GPU architecture for AI workloads"
-    ],
-    "AAPL":     [
-        "Apple iPhone sales exceed analyst expectations in latest quarter",
-        "Services revenue growth drives Apple valuation higher",
-        "Apple AI features drive upgrade cycle demand"
-    ],
-    "MSFT":     [
-        "Microsoft Azure AI growth accelerates enterprise adoption",
-        "Copilot integration boosts Microsoft productivity suite revenue",
-        "Microsoft cloud margins improve on AI efficiency gains"
-    ],
-    "TSLA":     [
-        "Tesla delivery numbers beat consensus estimates for quarter",
-        "Tesla Cybertruck production ramp progresses ahead of schedule",
-        "Tesla energy storage business shows strong growth trajectory"
-    ]
-}
+seen_headlines: Set[str] = set()
+SPAM_KEYWORDS = ["scam", "giveaway", "free crypto", "click here", "subscribe now", "promoted", "sponsored"]
+PREMIUM_SOURCES = ["Bloomberg", "Reuters", "Financial Times", "Wall Street Journal", "CNBC"]
+
+def calculate_news_score(sentiment: float, relevance: float, recency: float, source_quality: float) -> float:
+    base_sentiment_score = (sentiment + 1.0) * 50.0
+    final_score = (
+        (base_sentiment_score * 0.50) +
+        (relevance * 100 * 0.20) +
+        (recency * 100 * 0.15) +
+        (source_quality * 100 * 0.15)
+    )
+    return max(0.0, min(100.0, final_score))
 
 def get_fallback_sentiment(ticker: str) -> NewsSentimentEvent:
-    """สร้าง sentiment จาก fallback headlines เมื่อไม่มี API"""
-    headlines = FALLBACK_HEADLINES.get(ticker, [f"Market activity continues for {ticker}"])
-    headline = headlines[int(datetime.now().minute) % len(headlines)]  # rotate
-    scores = analyzer.polarity_scores(headline)
+    headline = f"Market activity continues for {ticker} amid general market trends."
+    sentiment, model_used = extract_sentiment(headline)
+    
+    relevance = 0.5
+    recency = 0.5
+    source_quality = 0.5
+    
+    final_score = calculate_news_score(sentiment, relevance, recency, source_quality)
+    
     return NewsSentimentEvent(
         ticker=ticker,
         headline=headline,
-        sentiment_score=round(scores["compound"], 3),
-        confidence_score=0.65,
-        source="FallbackSentinel"
+        sentiment_score=sentiment,
+        relevance_score=relevance,
+        recency_score=recency,
+        source_quality_score=source_quality,
+        final_news_score=final_score,
+        confidence_score=0.5,
+        source=f"FallbackSentinel ({model_used})"
     )
 
-async def fetch_newsapi_sentiment(ticker: str, api_key: str, client: httpx.AsyncClient) -> NewsSentimentEvent:
-    """ดึงข่าวจริงจาก NewsAPI และคำนวณ VADER sentiment"""
+async def fetch_news_and_score(ticker: str, api_key: str, client: httpx.AsyncClient) -> NewsSentimentEvent:
     keyword = TICKER_KEYWORDS.get(ticker, ticker)
-    url = (
-        f"https://newsapi.org/v2/everything"
-        f"?q={keyword}&apiKey={api_key}&pageSize=5"
-        f"&sortBy=publishedAt&language=en"
-    )
+    url = f"https://newsapi.org/v2/everything?q={keyword}&apiKey={api_key}&pageSize=10&sortBy=publishedAt&language=en"
+    
     try:
         r = await client.get(url, timeout=5.0)
         if r.status_code == 200:
             articles = r.json().get("articles", [])
-            if articles:
-                # รวม sentiment จากหลายบทความ weighted by position
-                all_scores = []
-                headlines_used = []
-                for i, article in enumerate(articles[:5]):
-                    title = article.get("title", "")
-                    desc = article.get("description", "") or ""
-                    text = f"{title}. {desc}"
-                    scores = analyzer.polarity_scores(text)
-                    weight = 1.0 / (i + 1)  # บทความแรกสำคัญกว่า
-                    all_scores.append(scores["compound"] * weight)
-                    headlines_used.append(title)
-
-                total_weight = sum(1.0 / (i + 1) for i in range(len(all_scores)))
-                weighted_sentiment = sum(all_scores) / total_weight if total_weight > 0 else 0.0
-
-                # ใช้ headline แรกเป็น representative
-                main_headline = headlines_used[0] if headlines_used else f"News for {ticker}"
-
-                logger.info(f"[NewsAPI] {ticker}: {len(articles)} articles → sentiment {weighted_sentiment:.3f}")
+            valid_articles = []
+            now = datetime.now(timezone.utc)
+            
+            for a in articles:
+                title = a.get("title", "")
+                if title in seen_headlines: continue
+                if any(spam in title.lower() for spam in SPAM_KEYWORDS): continue
+                
+                pub_date_str = a.get("publishedAt")
+                if pub_date_str:
+                    try:
+                        pub_date = datetime.strptime(pub_date_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+                        age_hours = (now - pub_date).total_seconds() / 3600
+                        if age_hours > 24: continue
+                    except Exception:
+                        age_hours = 12
+                else:
+                    age_hours = 12
+                
+                seen_headlines.add(title)
+                if len(seen_headlines) > 1000: seen_headlines.clear()
+                
+                desc = a.get("description", "") or ""
+                text = f"{title}. {desc}"
+                relevance = min(1.0, (text.lower().count(ticker.lower()[:3]) * 0.2) + 0.4)
+                
+                source_name = a.get("source", {}).get("name", "")
+                source_quality = 1.0 if any(p in source_name for p in PREMIUM_SOURCES) else 0.6
+                recency = max(0.0, 1.0 - (age_hours / 24.0))
+                
+                # NLP Inference
+                sentiment, model_used = await asyncio.to_thread(extract_sentiment, text)
+                
+                final_score = calculate_news_score(sentiment, relevance, recency, source_quality)
+                
+                valid_articles.append({
+                    "headline": title,
+                    "sentiment": sentiment,
+                    "relevance": relevance,
+                    "recency": recency,
+                    "source_quality": source_quality,
+                    "final_score": final_score,
+                    "source": f"{source_name} ({model_used})"
+                })
+            
+            if valid_articles:
+                valid_articles.sort(key=lambda x: x["final_score"], reverse=True)
+                top = valid_articles[0]
+                conf = min(0.95, 0.6 + (len(valid_articles) * 0.05))
+                
+                logger.info(f"[News] {ticker}: {len(valid_articles)} valid articles. Top Score: {top['final_score']:.1f}")
                 return NewsSentimentEvent(
                     ticker=ticker,
-                    headline=main_headline[:200],  # truncate
-                    sentiment_score=round(weighted_sentiment, 3),
-                    confidence_score=min(0.95, 0.7 + len(articles) * 0.05),
-                    source="NewsAPI"
+                    headline=top["headline"][:200],
+                    sentiment_score=top["sentiment"],
+                    relevance_score=top["relevance"],
+                    recency_score=top["recency"],
+                    source_quality_score=top["source_quality"],
+                    final_news_score=top["final_score"],
+                    confidence_score=conf,
+                    source=top["source"] or "NewsAPI"
                 )
-        else:
-            logger.warning(f"[NewsAPI] {ticker}: HTTP {r.status_code}")
     except Exception as e:
         logger.error(f"[NewsAPI] Error fetching {ticker}: {e}")
 
     return get_fallback_sentiment(ticker)
 
 async def news_intelligence_poller(event_bus: EventBus):
-    """
-    News Intelligence Engine — ดึงข่าวจริงและคำนวณ sentiment
-    - ใช้ NewsAPI ถ้ามี key
-    - ใช้ VADER กับ fallback headlines ถ้าไม่มี key
-    - Publish ทุก 5 นาที
-    """
     logger.info("Starting News Intelligence Engine...")
     tickers = list(TICKER_KEYWORDS.keys())
-
+    
     while True:
         try:
-            # โหลด API key ทุกรอบ (user อาจ update ผ่าน settings)
             api_key = os.getenv("NEWS_API_KEY", "").strip()
             has_real_api = bool(api_key) and "News" not in api_key and len(api_key) > 10
 
             async with httpx.AsyncClient() as client:
                 for ticker in tickers:
-                    try:
-                        if has_real_api:
-                            event = await fetch_newsapi_sentiment(ticker, api_key, client)
-                        else:
-                            event = get_fallback_sentiment(ticker)
+                    if has_real_api:
+                        event = await fetch_news_and_score(ticker, api_key, client)
+                    else:
+                        event = get_fallback_sentiment(ticker)
+                        
+                    await event_bus.publish(CH_NEWS, event.model_dump())
+                    await asyncio.sleep(0.5 if has_real_api else 0.1)
 
-                        await event_bus.publish(CH_NEWS, event.model_dump())
-                        logger.info(
-                            f"[News] {ticker}: {event.source} → "
-                            f"sentiment={event.sentiment_score:+.3f} "
-                            f"(conf={event.confidence_score:.2f})"
-                        )
-                        # หน่วงระหว่าง ticker เพื่อไม่ Rate Limit
-                        await asyncio.sleep(0.5 if has_real_api else 0.1)
-
-                    except Exception as e:
-                        logger.error(f"[News] Error processing {ticker}: {e}")
-
-            # รอ 5 นาทีก่อนรอบถัดไป
             logger.info("[News] Cycle complete. Next update in 5 minutes.")
             await asyncio.sleep(300)
-
         except asyncio.CancelledError:
-            logger.info("[News] Engine shutting down.")
             break
         except Exception as e:
-            logger.error(f"[News] Fatal error in poller: {e}")
+            logger.error(f"[News] Fatal error: {e}")
             await asyncio.sleep(60)
 
 def start_news_intelligence_engine(event_bus: EventBus):
-    asyncio.create_task(news_intelligence_poller(event_bus))
+    from backend.shared.tasks import registry
+    registry.register(news_intelligence_poller(event_bus), name="news_poller")
