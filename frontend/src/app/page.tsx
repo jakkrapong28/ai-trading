@@ -306,6 +306,26 @@ export default function Dashboard() {
     }
   };
 
+  const handleCloseOrder = async (orderId: string) => {
+    if (!confirm("⚠️ คุณต้องการสั่งปิดออเดอร์นี้ด้วยมือทันทีใช่หรือไม่?")) return;
+    try {
+      const res = await fetch("http://localhost:8000/api/close-order", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ order_id: orderId })
+      });
+      const data = await res.json();
+      if (data.success) {
+        alert(`ปิดออเดอร์สำเร็จ! ได้รับกำไร/ขาดทุนสะสม: $${data.realized_pnl.toFixed(2)} USD`);
+        fetchStateData();
+      } else {
+        alert(`ไม่สามารถปิดออเดอร์ได้: ${data.detail || "เกิดข้อผิดพลาด"}`);
+      }
+    } catch (e: any) {
+      alert(`การปิดออเดอร์ล้มเหลว: ${e.message}`);
+    }
+  };
+
   useEffect(() => {
     fetchStateData();
     fetchERPData();
@@ -2273,6 +2293,7 @@ export default function Dashboard() {
                       <th className="py-2.5 px-3">ราคาออก</th>
                       <th className="py-2.5 px-3">กำไร/ขาดทุน (USD)</th>
                       <th className="py-2.5 px-3">สถานะ</th>
+                      <th className="py-2.5 px-3 text-center">การจัดการ</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -2284,7 +2305,7 @@ export default function Dashboard() {
                       if (filtered.length === 0) {
                         return (
                           <tr>
-                            <td colSpan={8} className="py-8 text-center text-slate-500">
+                            <td colSpan={9} className="py-8 text-center text-slate-500">
                               ไม่พบประวัติการเทรดในวันที่เลือก
                             </td>
                           </tr>
@@ -2326,6 +2347,18 @@ export default function Dashboard() {
                             }`}>
                               {ord.status}
                             </span>
+                          </td>
+                          <td className="py-2.5 px-3 text-center">
+                            {ord.status !== "CLOSED" && ord.status !== "CANCELLED" ? (
+                              <button
+                                onClick={() => handleCloseOrder(ord.id)}
+                                className="px-2 py-0.5 rounded bg-red-500/20 hover:bg-red-500/40 text-red-400 border border-red-500/30 text-[10px] font-bold transition-all"
+                              >
+                                ปิดออเดอร์ ❌
+                              </button>
+                            ) : (
+                              <span className="text-[10px] text-slate-600">-</span>
+                            )}
                           </td>
                         </tr>
                       ));

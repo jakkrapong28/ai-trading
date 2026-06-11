@@ -897,6 +897,139 @@ async def emergency_stop():
     await manager.broadcast({"type": "emergency_stop", "message": "🛑 ระบบหยุดฉุกเฉิน!"})
     return {"success": True}
 
+class CloseOrderRequest(BaseModel):
+    order_id: str
+
+@app.post("/api/close-order")
+async def close_order_endpoint(req: CloseOrderRequest):
+    import json
+    import uuid
+    import hmac
+    import hashlib
+    from backend.brokers.paper import PaperBroker
+    from backend.shared.schema.events import ExecutionEvent
+    
+    db = SessionLocal()
+    try:
+        trade = db.query(Trade).filter(Trade.id == req.order_id).first()
+        if not trade:
+            raise HTTPException(status_code=404, detail="ไม่พบออเดอร์นี้ในระบบ")
+        if trade.status in [TradeStatus.CLOSED, TradeStatus.CANCELLED]:
+            raise HTTPException(status_code=400, detail="ออเดอร์นี้ถูกปิดหรือยกเลิกไปแล้ว")
+        
+        # Get current price
+        current_price = trade.entry_price or 0.0
+        df = ticker_data.get(trade.ticker)
+        if df is not None and not df.empty:
+            current_price = float(df['price'].iloc[-1])
+            
+        broker = PaperBroker()
+        res = await broker.close_order(trade.id, exit_price=current_price)
+        realized_pnl = res["realized_pnl"]
+        
+        # Publish closed event to Redis
+        closed_event = ExecutionEvent(
+            trade_id=trade.id,
+            ticker=trade.ticker,
+            action=trade.action.value if hasattr(trade.action, "value") else trade.action,
+            status="CLOSED",
+            lot_size=trade.lot_size,
+            exit_price=current_price,
+            realized_pnl=realized_pnl,
+            message="Manual Close from Dashboard"
+        )
+        await event_bus.publish(CH_EXEC_CLOSED, closed_event.model_dump())
+        
+        # Fire ERP Webhook
+        async def fire_erp_webhook_local(event_type: str, event_data: dict, trade_id: str):
+            erp_url = os.getenv("ERP_WEBHOOK_URL", "http://localhost:5001/webhook/trade-event")
+            erp_api_key = os.getenv("ERP_API_KEY", "erp_dev_key_change_in_production_32chars")
+            erp_webhook_secret = os.getenv("ERP_WEBHOOK_SECRET", "")
+            idemp_key = str(uuid.uuid4())
+            
+            payload = {
+                "event": event_type,
+                "data": {
+                    "trade_id": trade_id,
+                    "symbol": event_data["ticker"],
+                    "action": event_data["action"],
+                    "price": event_data.get("exit_price", 0),
+                    "exit_price": event_data.get("exit_price", 0),
+                    "entry_price": trade.entry_price or 0.0,
+                    "volume": event_data["lot_size"],
+                    "lot_size": event_data["lot_size"],
+                    "pnl": event_data["realized_pnl"],
+                    "fee": 0.0
+                }
+            }
+            
+            raw_body = json.dumps(payload, separators=(',', ':'), sort_keys=False)
+            signature = ""
+            if erp_webhook_secret:
+                sig_hex = hmac.new(
+                    erp_webhook_secret.encode('utf-8'),
+                    raw_body.encode('utf-8'),
+                    hashlib.sha256
+                ).hexdigest()
+                signature = f"sha256={sig_hex}"
+                
+            db_erp = SessionLocal()
+            try:
+                record = ERPDeliveryRecord(
+                    trade_id=trade_id,
+                    idempotency_key=idemp_key,
+                    request_payload=payload
+                )
+                db_erp.add(record)
+                db_erp.commit()
+                
+                headers = {
+                    "Idempotency-Key": idemp_key,
+                    "X-Api-Key": erp_api_key,
+                    "Content-Type": "application/json"
+                }
+                if signature:
+                    headers["X-Signature"] = signature
+                    
+                async with httpx.AsyncClient() as client:
+                    resp = await client.post(
+                        erp_url,
+                        content=raw_body,
+                        headers=headers,
+                        timeout=3.0
+                    )
+                    record.response_code = resp.status_code
+                    record.response_body = resp.text
+                    record.status = "SUCCESS" if resp.status_code < 300 else "FAILED"
+                db_erp.commit()
+            except Exception as ex:
+                logger.error(f"Failed to fire ERP webhook for manual close: {ex}")
+            finally:
+                db_erp.close()
+                
+        asyncio.create_task(fire_erp_webhook_local("trade.pnl_realized", closed_event.model_dump(), trade.id))
+        
+        # Publish decision journal update
+        action_name = trade.action.value if hasattr(trade.action, "value") else trade.action
+        journal_entry = {
+            "ticker": trade.ticker,
+            "decision": "ORDER_CLOSED_MANUALLY",
+            "signal_action": "HOLD",
+            "confidence_score": 1.0,
+            "reasons": [f"ผู้ใช้ปิดออเดอร์ {action_name} {trade.ticker} ด้วยมือผ่านหน้าบอร์ด ที่ราคา {current_price:.2f} (PnL: {realized_pnl:+.2f} USD)"]
+        }
+        await event_bus.publish(CH_AI_JOURNAL, journal_entry)
+        
+        return {"success": True, "realized_pnl": realized_pnl}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in manually closing order: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
 @app.post("/api/calibrate")
 async def trigger_calibration():
     from backend.core.smc_calibrate import run_calibration
