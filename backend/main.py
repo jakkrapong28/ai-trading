@@ -783,7 +783,11 @@ async def reset_data():
         raise HTTPException(status_code=500, detail=f"Database reset failed: {e}")
         
     try:
-        await http_client.delete("http://localhost:5001/api/reset")
+        erp_api_key = os.getenv("ERP_API_KEY", "erp_dev_key_change_in_production_32chars")
+        await http_client.delete(
+            "http://localhost:5001/api/reset",
+            headers={"X-Api-Key": erp_api_key}
+        )
     except Exception as e:
         logger.error(f"Error resetting ERP server: {e}")
         
@@ -828,7 +832,11 @@ async def update_settings(req: SettingsRequest):
 @app.get("/api/erp/ledger")
 async def proxy_erp_ledger():
     try:
-        r = await http_client.get("http://localhost:5001/api/ledger")
+        erp_api_key = os.getenv("ERP_API_KEY", "erp_dev_key_change_in_production_32chars")
+        r = await http_client.get(
+            "http://localhost:5001/api/ledger",
+            headers={"X-Api-Key": erp_api_key}
+        )
         return r.json()
     except Exception:
         return {"success": False, "ledger": []}
@@ -836,7 +844,11 @@ async def proxy_erp_ledger():
 @app.get("/api/erp/tax-summary")
 async def proxy_erp_tax():
     try:
-        r = await http_client.get("http://localhost:5001/api/tax-summary")
+        erp_api_key = os.getenv("ERP_API_KEY", "erp_dev_key_change_in_production_32chars")
+        r = await http_client.get(
+            "http://localhost:5001/api/tax-summary",
+            headers={"X-Api-Key": erp_api_key}
+        )
         return r.json()
     except Exception:
         return {"success": False, "data": {}}
