@@ -119,6 +119,8 @@ async def load_orders_from_db() -> List[dict]:
                 "volume": t.lot_size,
                 "entry_price": t.entry_price or 0.0,
                 "exit_price": t.exit_price or 0.0,
+                "sl_price": t.sl_price or 0.0,
+                "tp_price": t.tp_price or 0.0,
                 "pnl": t.realized_pnl or 0.0,
                 "fee": 0.0,
                 "status": t.status.value,
@@ -534,7 +536,15 @@ async def websocket_bridge():
                     })
                     
                 elif channel == CH_MARKET_DATA:
-                    if msg.get("ticker") == current_symbol:
+                    ticker = msg.get("ticker")
+                    price = msg.get("price")
+                    if ticker and price:
+                        await manager.broadcast({
+                            "type": "price_tick",
+                            "symbol": ticker,
+                            "price": price,
+                        })
+                    if ticker == current_symbol:
                         df = ticker_data.get(current_symbol)
                         if df is not None and not df.empty:
                             prices_list = df['price'].tolist()
@@ -558,7 +568,7 @@ async def websocket_bridge():
                         await manager.broadcast({
                             "type": "price_tick",
                             "symbol": current_symbol,
-                            "price": msg.get("price"),
+                            "price": price,
                             "indicators": indicators,
                             "signal": signal,
                             "risk": risk
@@ -800,6 +810,10 @@ async def get_state():
         },
         "nan_logs": {
             "count": NAN_DETECTION_COUNT
+        },
+        "market_prices": {
+            ticker: data.get("last_price") or data.get("price")
+            for ticker, data in latest_prices.items()
         },
         "calibration": {
             "calibrated_count": calibrated_count,

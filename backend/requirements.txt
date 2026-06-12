@@ -13,3 +13,4 @@ vaderSentiment>=3.3.2
 numpy>=1.26.0
 pandas>=2.2.0
 python-dotenv>=1.0.0
+pytz>=2026.2

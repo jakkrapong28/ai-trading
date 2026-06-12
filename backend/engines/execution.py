@@ -70,7 +70,8 @@ class ExecutionEngine:
                     stop_loss=approved.stop_loss,
                     take_profit=approved.take_profit,
                     entry_price=approved.signal_price,
-                    market_regime=approved.market_regime
+                    market_regime=approved.market_regime,
+                    atr_at_entry=approved.atr_at_entry
                 )
                 
                 trade_id = res["order_id"]
@@ -297,13 +298,20 @@ class ExecutionEngine:
                                     logger.info(f"[{ticker}] Chandelier Exit: SL moved to {trailing_sl:.2f} (1 ATR from peak {peak:.2f})")
                         
                         # 3. Check Standard Exit Conditions
-                        sl_hit = (action == "BUY" and price <= sl) or (action == "SELL" and price >= sl)
-                        tp_hit = (action == "BUY" and price >= tp) or (action == "SELL" and price <= tp)
+                        if sl is None:
+                            logger.warning(f"[{ticker}] SL price is None for trade {trade_id}. Skipping SL check.")
+                        if tp is None:
+                            logger.warning(f"[{ticker}] TP price is None for trade {trade_id}. Skipping TP check.")
                         
-                        if sl_hit or tp_hit:
-                            exit_p = sl if sl_hit else tp
-                            reason = "SL/Trailing Hit" if sl_hit else "TP Hit"
-                            await self._execute_close(trade, exit_p, reason, close_pct=1.0)
+                        sl_hit = sl is not None and ((action == "BUY" and price <= sl) or (action == "SELL" and price >= sl))
+                        tp_hit = tp is not None and ((action == "BUY" and price >= tp) or (action == "SELL" and price <= tp))
+                        
+                        if sl_hit:
+                            logger.info(f"[{ticker}] SL hit at {price:.4f} (SL: {sl:.4f}) for trade {trade_id}. Closing position.")
+                            await self._execute_close(trade, sl, "SL/Trailing Hit", close_pct=1.0)
+                        elif tp_hit:
+                            logger.info(f"[{ticker}] TP hit at {price:.4f} (TP: {tp:.4f}) for trade {trade_id}. Closing position.")
+                            await self._execute_close(trade, tp, "TP Hit", close_pct=1.0)
                         
                         db.close()
                         

@@ -39,11 +39,24 @@ interface Order {
   volume: number;
   entry_price: number;
   exit_price: number;
+  sl_price: number;
+  tp_price: number;
   pnl: number;
   fee: number;
   status: string;
   opened_at?: string;
   closed_at?: string;
+}
+
+interface SignalActivity {
+  id: string;
+  ticker: string;
+  action: string;
+  status: "VOTING" | "APPROVED" | "REJECTED";
+  reason?: string;
+  sl?: number;
+  tp?: number;
+  time: string;
 }
 
 interface ChatMessage {
@@ -156,6 +169,7 @@ export default function Dashboard() {
   // --- สเตตจำลองจากระบบเทรดและ ERP ---
   const [symbol, setSymbol] = useState("XAUUSD");
   const [latestPrice, setLatestPrice] = useState<number | null>(null);
+  const [priceMap, setPriceMap] = useState<Record<string, number>>({});
   const [indicators, setIndicators] = useState<Indicator | null>(null);
   const [signal, setSignal] = useState<Signal | null>(null);
   const [risk, setRisk] = useState<RiskCheck | null>(null);
@@ -170,7 +184,13 @@ export default function Dashboard() {
   const [nanLogs, setNanLogs] = useState({ count: 0 });
   const [calibration, setCalibration] = useState({ calibrated_count: 0, pending_count: 0 });
   const [correlationRejections, setCorrelationRejections] = useState({ count: 0 });
-  
+  const [signalActivity, setSignalActivity] = useState<SignalActivity[]>([]);
+
+  const addSignalActivity = (act: Omit<SignalActivity, "id" | "time">) => {
+    const entry: SignalActivity = { ...act, id: crypto.randomUUID?.() || Math.random().toString(36), time: new Date().toISOString() };
+    setSignalActivity(prev => [entry, ...prev].slice(0, 50));
+  };
+
   const getMenuButtonClass = (menuName: string) => {
     const isActive = activeMenu === menuName;
     return `w-full flex items-center justify-between px-3 py-1.5 text-[12.5px] rounded text-left transition-all duration-300 ${
@@ -226,6 +246,8 @@ export default function Dashboard() {
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const symbolRef = useRef(symbol);
+  symbolRef.current = symbol;
 
   // คลาสอ้างอิงตำแหน่งของ Agents ที่เคลื่อนไหวอยู่บน Canvas
   const agentsStateRef = useRef<any[]>([]);
@@ -273,6 +295,12 @@ export default function Dashboard() {
       const data = await res.json();
       setSymbol(data.symbol);
       setLatestPrice(data.latest);
+      if (data.symbol && data.latest) {
+        setPriceMap(prev => ({ ...prev, [data.symbol]: data.latest }));
+      }
+      if (data.market_prices) {
+        setPriceMap(prev => ({ ...prev, ...data.market_prices }));
+      }
       setIndicators(data.indicators);
       setSignal(data.signal);
       setRisk(data.risk);
@@ -418,11 +446,40 @@ export default function Dashboard() {
           if (msg.correlation_rejections) setCorrelationRejections(msg.correlation_rejections);
         } 
         else if (msg.type === "price_tick") {
-          setLatestPrice(msg.price);
-          setIndicators(msg.indicators);
-          setSignal(msg.signal);
-          setRisk(msg.risk);
+          if (msg.symbol === symbolRef.current) {
+            setLatestPrice(msg.price);
+          }
+          if (msg.symbol && msg.price) {
+            setPriceMap(prev => ({ ...prev, [msg.symbol]: msg.price }));
+          }
+          if (msg.indicators) setIndicators(msg.indicators);
+          if (msg.signal) setSignal(msg.signal);
+          if (msg.risk) setRisk(msg.risk);
         } 
+        else if (msg.type === "risk:signal:approved") {
+          addSignalActivity({
+            ticker: msg.data?.ticker || msg.ticker || "?",
+            action: msg.data?.action || msg.action || "?",
+            status: "APPROVED",
+            sl: msg.data?.stop_loss || msg.stop_loss,
+            tp: msg.data?.take_profit || msg.take_profit,
+          });
+        }
+        else if (msg.type === "risk:signal:rejected") {
+          addSignalActivity({
+            ticker: msg.data?.ticker || msg.ticker || "?",
+            action: msg.data?.action || msg.action || "?",
+            status: "REJECTED",
+            reason: msg.data?.reason || msg.reason || "ไม่มีเหตุผล",
+          });
+        }
+        else if (msg.type === "ai:decision:final") {
+          addSignalActivity({
+            ticker: msg.data?.ticker || msg.ticker || "?",
+            action: msg.data?.action || msg.action || "?",
+            status: "VOTING",
+          });
+        }
         else if (msg.type === "agent_typing") {
           const agentKey = mapAgentNameToRoomId(msg.message.agent);
           addChatMessage(agentKey, msg.message.message);
@@ -1994,17 +2051,31 @@ export default function Dashboard() {
                 </div>
 
                 {/* 🤖 Auto Scan — วางแยกชัดเจนขวาสุดแถวบน */}
-                <button
-                  onClick={handleToggleMode}
-                  className={`px-3 py-1.5 text-[9px] font-bold rounded border transition whitespace-nowrap flex items-center gap-1 ${
-                    mode === "auto"
-                      ? "bg-[#0d2a3a] text-[#22d3ee] border-[#1a5a7a] shadow-[0_0_10px_#22d3ee55]"
-                      : "bg-[#111827] text-[#7a9bbf] border-[#1e2d45] hover:bg-[#1e2d45] hover:text-[#c8d8f0]"
-                  }`}
-                >
-                  <span className={`w-1.5 h-1.5 rounded-full ${mode === "auto" ? "bg-[#22d3ee] shadow-[0_0_5px_#22d3ee]" : "bg-[#3d5a7a]"}`} />
-                  {mode === "auto" ? "AUTO ON" : "Auto Scan"}
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={handleToggleMode}
+                    className={`px-3 py-1.5 text-[9px] font-bold rounded border transition whitespace-nowrap flex items-center gap-1 ${
+                      mode === "auto"
+                        ? "bg-[#0d2a3a] text-[#22d3ee] border-[#1a5a7a] shadow-[0_0_10px_#22d3ee55]"
+                        : "bg-[#111827] text-[#7a9bbf] border-[#1e2d45] hover:bg-[#1e2d45] hover:text-[#c8d8f0]"
+                    }`}
+                  >
+                    <span className={`w-1.5 h-1.5 rounded-full ${mode === "auto" ? "bg-[#22d3ee] shadow-[0_0_5px_#22d3ee]" : "bg-[#3d5a7a]"}`} />
+                    {mode === "auto" ? "AUTO ON" : "Auto Scan"}
+                  </button>
+                  {mode === "auto" && (
+                    <div className="flex items-center gap-1.5 text-[8px] text-[#7a9bbf] bg-[#111827]/60 border border-[#1e2d45] rounded px-2 py-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#22d3ee] animate-pulse shadow-[0_0_4px_#22d3ee]" />
+                      {signalActivity.length > 0 && signalActivity[0].status === "APPROVED" ? (
+                        <span className="text-emerald-400">✅ Signal Approved</span>
+                      ) : signalActivity.length > 0 && signalActivity[0].status === "REJECTED" ? (
+                        <span className="text-red-400">❌ Signal Rejected</span>
+                      ) : (
+                        <span className="text-slate-400">⏳ Waiting for signal...</span>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
 
               {/* แถวล่าง: Lot / SL / TP / Spread Limit / Reject / Risk % + ปุ่ม Action */}
@@ -2292,6 +2363,9 @@ export default function Dashboard() {
                       <th className="py-2.5 px-3">ประเภท</th>
                       <th className="py-2.5 px-3">ขนาด (Lot)</th>
                       <th className="py-2.5 px-3">ราคาเข้า</th>
+                      <th className="py-2.5 px-3">SL</th>
+                      <th className="py-2.5 px-3">TP</th>
+                      <th className="py-2.5 px-3">ราคาปัจจุบัน</th>
                       <th className="py-2.5 px-3">ราคาออก</th>
                       <th className="py-2.5 px-3">กำไร/ขาดทุน (USD)</th>
                       <th className="py-2.5 px-3">สถานะ</th>
@@ -2307,7 +2381,7 @@ export default function Dashboard() {
                       if (filtered.length === 0) {
                         return (
                           <tr>
-                            <td colSpan={9} className="py-8 text-center text-slate-500">
+                            <td colSpan={12} className="py-8 text-center text-slate-500">
                               ไม่พบประวัติการเทรดในวันที่เลือก
                             </td>
                           </tr>
@@ -2329,6 +2403,15 @@ export default function Dashboard() {
                           </td>
                           <td className="py-2.5 px-3 text-slate-300">{ord.volume}</td>
                           <td className="py-2.5 px-3 text-slate-300">${ord.entry_price.toFixed(2)}</td>
+                          <td className="py-2.5 px-3 text-red-400">
+                            {ord.sl_price > 0 ? `$${ord.sl_price.toFixed(2)}` : '-'}
+                          </td>
+                          <td className="py-2.5 px-3 text-emerald-400">
+                            {ord.tp_price > 0 ? `$${ord.tp_price.toFixed(2)}` : '-'}
+                          </td>
+                          <td className="py-2.5 px-3 text-white font-bold">
+                            {priceMap[ord.symbol] ? `$${priceMap[ord.symbol].toFixed(2)}` : '-'}
+                          </td>
                           <td className="py-2.5 px-3 text-slate-300">
                             {ord.exit_price > 0 ? `$${ord.exit_price.toFixed(2)}` : '-'}
                           </td>
@@ -2367,6 +2450,78 @@ export default function Dashboard() {
                     })()}
                   </tbody>
                 </table>
+              </div>
+            </div>
+
+            {/* 3. Signal Activity Log */}
+            <div className="bg-white/5 border border-white/10 rounded-xl p-6 space-y-4 backdrop-blur-md">
+              <div className="flex items-center justify-between border-b border-white/5 pb-3">
+                <h3 className="text-sm font-bold text-[#fbbf24] flex items-center gap-1.5 font-mono">
+                  📊 Auto Mode Signal Activity Log
+                  {mode === "auto" && <span className="w-2 h-2 rounded-full bg-[#22d3ee] animate-pulse shadow-[0_0_6px_#22d3ee] ml-1" />}
+                </h3>
+                <button
+                  onClick={() => setSignalActivity([])}
+                  className="text-[9px] px-2 py-0.5 bg-red-950/30 hover:bg-red-900 border border-red-800/30 text-red-400 rounded transition"
+                >
+                  ล้าง log
+                </button>
+              </div>
+              <div className="max-h-[320px] overflow-y-auto space-y-1">
+                {signalActivity.length === 0 ? (
+                  <div className="text-center py-8 text-slate-500 text-xs font-mono">
+                    {mode === "auto"
+                      ? "⏳ กำลังรอสัญญาณจาก AI Decision Engine..."
+                      : "💤 ระบบอยู่ใน Watch Mode — กด Auto Scan เพื่อเปิด Auto Mode"
+                    }
+                  </div>
+                ) : (
+                  signalActivity.map((act) => (
+                    <div
+                      key={act.id}
+                      className={`flex items-start gap-2 px-3 py-2 rounded text-[11px] font-mono border-l-2 ${
+                        act.status === "APPROVED"
+                          ? "border-emerald-500 bg-emerald-950/10"
+                          : act.status === "REJECTED"
+                          ? "border-red-500 bg-red-950/10"
+                          : "border-yellow-500 bg-yellow-950/10"
+                      }`}
+                    >
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-[10px] text-[#7a9bbf]">
+                            {new Date(act.time).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+                          </span>
+                          <span className="font-bold text-white">{act.ticker}</span>
+                          <span className={`px-1 py-0.5 rounded text-[9px] font-bold ${
+                            act.action === "BUY" ? "bg-emerald-500/10 text-emerald-400" : "bg-red-500/10 text-red-400"
+                          }`}>
+                            {act.action}
+                          </span>
+                          {act.status === "APPROVED" && (
+                            <span className="text-[9px] text-emerald-400 font-bold">✅ APPROVED</span>
+                          )}
+                          {act.status === "REJECTED" && (
+                            <span className="text-[9px] text-red-400 font-bold">❌ REJECTED</span>
+                          )}
+                          {act.status === "VOTING" && (
+                            <span className="text-[9px] text-yellow-400 font-bold">⏳ VOTING</span>
+                          )}
+                        </div>
+                        {act.status === "APPROVED" && (act.sl || act.tp) && (
+                          <div className="text-[10px] text-slate-400 mt-0.5">
+                            SL: <span className="text-red-400">${act.sl?.toFixed(2)}</span> &nbsp; TP: <span className="text-emerald-400">${act.tp?.toFixed(2)}</span>
+                          </div>
+                        )}
+                        {act.status === "REJECTED" && act.reason && (
+                          <div className="text-[10px] text-red-400/70 mt-0.5 truncate">
+                            {act.reason}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))
+                )}
               </div>
             </div>
           </div>

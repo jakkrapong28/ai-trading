@@ -58,7 +58,7 @@ class PaperBroker(BrokerAdapter):
         finally:
             db.close()
 
-    async def place_order(self, ticker: str, action: str, lot_size: float, stop_loss: float, take_profit: float, entry_price: float = None, market_regime: str = None) -> Dict[str, Any]:
+    async def place_order(self, ticker: str, action: str, lot_size: float, stop_loss: float, take_profit: float, entry_price: float = None, market_regime: str = None, atr_at_entry: float = None) -> Dict[str, Any]:
         if entry_price is None:
             raise ValueError("entry_price is required for PaperBroker")
 
@@ -75,7 +75,8 @@ class PaperBroker(BrokerAdapter):
                 entry_price=entry_price,
                 sl_price=stop_loss,
                 tp_price=take_profit,
-                market_regime=market_regime
+                market_regime=market_regime,
+                atr_at_entry=atr_at_entry
             )
             db.add(trade)
             db.commit()
