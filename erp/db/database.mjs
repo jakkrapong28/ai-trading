@@ -112,7 +112,7 @@ export async function initDb() {
         ADD COLUMN IF NOT EXISTS correlation_id VARCHAR(100)
     `);
 
-    // audit_logs may have been created with old schema — ensure all columns exist
+    // audit_logs may have been created with old schema — ensure all columns exist and constraints are relaxed
     try {
       await client.query(`ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS event_type VARCHAR(100)`);
       await client.query(`ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS user_agent TEXT`);
@@ -120,7 +120,18 @@ export async function initDb() {
       await client.query(`ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS correlation_id VARCHAR(100)`);
       await client.query(`ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS payload JSONB`);
       await client.query(`ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()`);
+      
+      // Relax old schema NOT NULL constraints so ERP inserts can succeed
+      await client.query(`ALTER TABLE audit_logs ALTER COLUMN event_name DROP NOT NULL`);
+      await client.query(`ALTER TABLE audit_logs ALTER COLUMN actor DROP NOT NULL`);
     } catch (_) { /* fresh table: columns created via CREATE TABLE above */ }
+
+    // erp_delivery_records may have been created with Python schema — ensure all columns exist
+    try {
+      await client.query(`ALTER TABLE erp_delivery_records ADD COLUMN IF NOT EXISTS event VARCHAR(100)`);
+      await client.query(`ALTER TABLE erp_delivery_records ADD COLUMN IF NOT EXISTS payload JSONB`);
+    } catch (_) { /* fresh table: columns created via CREATE TABLE above */ }
+
 
 
 

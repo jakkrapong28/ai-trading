@@ -43,7 +43,7 @@ export function validateWebhookSignature(req, res, next) {
     return res.status(401).json({ success: false, error: 'Missing x-signature header.' });
   }
 
-  const rawBody = JSON.stringify(req.body);
+  const rawBody = req.rawBody || JSON.stringify(req.body);
   const expected = 'sha256=' + crypto
     .createHmac('sha256', secret)
     .update(rawBody, 'utf8')
@@ -91,8 +91,8 @@ export async function logAudit(req, eventType, payload = {}) {
   if (!_auditPool) return;
   try {
     await _auditPool.query(
-      `INSERT INTO audit_logs (id, event_type, user_agent, ip_address, correlation_id, payload, created_at)
-       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, NOW())`,
+      `INSERT INTO audit_logs (event_type, user_agent, ip_address, correlation_id, payload, created_at)
+       VALUES ($1, $2, $3, $4, $5, NOW())`,
       [
         eventType,
         req?.headers?.['user-agent'] || 'unknown',

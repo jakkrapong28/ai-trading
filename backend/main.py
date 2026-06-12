@@ -323,6 +323,129 @@ async def handle_telegram_command_logic(cmd: str, user_tag: str) -> str:
         await event_bus.publish(CH_AI_JOURNAL, journal_entry)
         return "⏸️ สั่งการสำเร็จ: ระงับระบบ Virtual Office ชั่วคราวเรียบร้อย"
         
+    elif cmd.startswith("/closeall"):
+        db = SessionLocal()
+        closed_count = 0
+        total_pnl = 0.0
+        try:
+            open_trades = db.query(Trade).filter(
+                Trade.status.in_([TradeStatus.OPEN, TradeStatus.RUNNING, TradeStatus.PARTIAL])
+            ).all()
+            
+            from backend.brokers.paper import PaperBroker
+            from backend.shared.schema.events import ExecutionEvent
+            import uuid, json, hmac, hashlib
+            broker = PaperBroker()
+            
+            async def fire_erp_webhook_local(event_type: str, event_data: dict, trade_id: str, entry_price: float):
+                erp_url = os.getenv("ERP_WEBHOOK_URL", "http://localhost:5001/webhook/trade-event")
+                erp_api_key = os.getenv("ERP_API_KEY", "erp_dev_key_change_in_production_32chars")
+                erp_webhook_secret = os.getenv("ERP_WEBHOOK_SECRET", "")
+                idemp_key = str(uuid.uuid4())
+                
+                payload = {
+                    "event": event_type,
+                    "data": {
+                        "trade_id": trade_id,
+                        "symbol": event_data["ticker"],
+                        "action": event_data["action"],
+                        "price": event_data.get("exit_price", 0),
+                        "exit_price": event_data.get("exit_price", 0),
+                        "entry_price": entry_price,
+                        "volume": event_data["lot_size"],
+                        "lot_size": event_data["lot_size"],
+                        "pnl": event_data["realized_pnl"],
+                        "fee": 0.0
+                    }
+                }
+                raw_body = json.dumps(payload, separators=(',', ':'), sort_keys=False)
+                signature = ""
+                if erp_webhook_secret:
+                    sig_hex = hmac.new(
+                        erp_webhook_secret.encode('utf-8'),
+                        raw_body.encode('utf-8'),
+                        hashlib.sha256
+                    ).hexdigest()
+                    signature = f"sha256={sig_hex}"
+                    
+                db_erp = SessionLocal()
+                try:
+                    record = ERPDeliveryRecord(
+                        trade_id=trade_id,
+                        idempotency_key=idemp_key,
+                        request_payload=payload
+                    )
+                    db_erp.add(record)
+                    db_erp.commit()
+                    
+                    headers = {
+                        "Idempotency-Key": idemp_key,
+                        "X-Api-Key": erp_api_key,
+                        "Content-Type": "application/json"
+                    }
+                    if signature:
+                        headers["X-Signature"] = signature
+                        
+                    async with httpx.AsyncClient() as client:
+                        resp = await client.post(
+                            erp_url,
+                            content=raw_body,
+                            headers=headers,
+                            timeout=3.0
+                        )
+                        record.response_code = resp.status_code
+                        record.response_body = resp.text
+                        record.status = "SUCCESS" if resp.status_code < 300 else "FAILED"
+                    db_erp.commit()
+                except Exception as ex:
+                    logger.error(f"Failed to fire ERP webhook for command close: {ex}")
+                finally:
+                    db_erp.close()
+
+            for t in open_trades:
+                current_price = t.entry_price or 0.0
+                df = ticker_data.get(t.ticker)
+                if df is not None and not df.empty:
+                    current_price = float(df['price'].iloc[-1])
+                
+                res = await broker.close_order(t.id, exit_price=current_price)
+                pnl = res["realized_pnl"]
+                total_pnl += pnl
+                closed_count += 1
+                
+                closed_event = ExecutionEvent(
+                    trade_id=t.id,
+                    ticker=t.ticker,
+                    action=t.action.value if hasattr(t.action, "value") else t.action,
+                    status="CLOSED",
+                    lot_size=t.lot_size,
+                    exit_price=current_price,
+                    realized_pnl=pnl,
+                    message="Manual Command Close"
+                )
+                await event_bus.publish(CH_EXEC_CLOSED, closed_event.model_dump())
+                asyncio.create_task(fire_erp_webhook_local("trade.pnl_realized", closed_event.model_dump(), t.id, t.entry_price or 0.0))
+                
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Error executing /closeall command: {e}")
+            return f"❌ เกิดข้อผิดพลาดในการปิดออเดอร์: {e}"
+        finally:
+            db.close()
+            
+        if closed_count > 0:
+            journal_entry = {
+                "ticker": current_symbol,
+                "decision": "ORDERS_CLOSED_COMMAND",
+                "signal_action": "HOLD",
+                "confidence_score": 1.0,
+                "reasons": [f"ผู้ใช้สั่งปิดออเดอร์ทั้งหมดในพอร์ตด้วยคำสั่งพิมพ์ ({closed_count} ออเดอร์) รวมกำไร/ขาดทุนสุทธิ: {total_pnl:+.2f} USD"]
+            }
+            await event_bus.publish(CH_AI_JOURNAL, journal_entry)
+            return f"✅ สั่งปิดโพซิชันทั้งหมดในพอร์ตจำนวน {closed_count} ไม้ เรียบร้อยแล้วครับ! (ยอดกำไร/ขาดทุนสะสมสุทธิ: {total_pnl:+.2f} USD)"
+        return "ℹ️ ไม่มีโพซิชันเทรดที่กำลังรันอยู่ในขณะนี้"
+
     elif cmd.startswith("/close all"):
         db = SessionLocal()
         try:
@@ -332,6 +455,15 @@ async def handle_telegram_command_logic(cmd: str, user_tag: str) -> str:
             db.commit()
         finally:
             db.close()
+            
+        # Broadcast update to WebSocket clients to clear active orders in UI
+        orders_list = await load_orders_from_db()
+        balances_list = await calculate_balances()
+        await manager.broadcast({
+            "type": "order_closed",
+            "orders": orders_list,
+            "balances": balances_list
+        })
             
         journal_entry = {
             "ticker": current_symbol,
@@ -354,7 +486,8 @@ async def handle_telegram_command_logic(cmd: str, user_tag: str) -> str:
             "- `/risk` (ตรวจวัดเกราะความเสี่ยง)\n"
             "- `/alerts` (ดูบันทึกแจ้งเตือนภัยพอร์ต)\n"
             "- `/pause` (กดปุ่มฉุกเฉินหยุดการซื้อขาย)\n"
-            "- `/close all` (ล้างสัญญาจำลองที่ค้างคา)"
+            "- `/close all` (ล้างสัญญาจำลองที่ค้างคา - ยกเลิก)\n"
+            "- `/closeall` (สั่งปิดโพซิชันทั้งหมดด้วยราคาตลาดปัจจุบัน)"
         )
 
 async def websocket_bridge():

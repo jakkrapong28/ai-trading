@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { pool } from '../db/database.mjs';
 import { logAudit } from '../middleware/apiKeyAuth.mjs';
 
@@ -18,11 +19,12 @@ async function checkIdempotency(client, idempotencyKey) {
 
 async function markDelivery(client, idempotencyKey, event, payload, status, responseCode = 200) {
   if (!idempotencyKey) return;
+  const deliveryId = crypto.randomUUID();
   await client.query(
-    `INSERT INTO erp_delivery_records (idempotency_key, event, status, response_code, payload, created_at)
-     VALUES ($1, $2, $3, $4, $5, NOW())
-     ON CONFLICT (idempotency_key) DO UPDATE SET status = $3, response_code = $4`,
-    [idempotencyKey, event, status, responseCode, JSON.stringify(payload)]
+    `INSERT INTO erp_delivery_records (id, idempotency_key, event, status, response_code, payload, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6, NOW())
+     ON CONFLICT (idempotency_key) DO UPDATE SET status = $4, response_code = $5`,
+    [deliveryId, idempotencyKey, event, status, responseCode, JSON.stringify(payload)]
   );
 }
 
@@ -49,7 +51,7 @@ export async function handleTradeEvent(req, res) {
     // ── Idempotency guard ─────────────────────────────────
     if (idempotencyKey) {
       const existing = await checkIdempotency(client, idempotencyKey);
-      if (existing) {
+      if (existing && existing.status === 'SUCCESS') {
         await client.query('ROLLBACK');
         console.log(`[ERP][${correlationId}] Duplicate delivery detected: ${idempotencyKey}`);
         return res.status(200).json({ success: true, duplicate: true, message: 'Duplicate event — already processed.' });

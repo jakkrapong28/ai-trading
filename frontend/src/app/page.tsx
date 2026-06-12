@@ -318,6 +318,7 @@ export default function Dashboard() {
       if (data.success) {
         alert(`ปิดออเดอร์สำเร็จ! ได้รับกำไร/ขาดทุนสะสม: $${data.realized_pnl.toFixed(2)} USD`);
         fetchStateData();
+        fetchERPData();
       } else {
         alert(`ไม่สามารถปิดออเดอร์ได้: ${data.detail || "เกิดข้อผิดพลาด"}`);
       }
@@ -439,6 +440,7 @@ export default function Dashboard() {
           setOrders((prev) => [msg.order, ...prev]);
           if (msg.balances) setBalances(msg.balances);
           addChatMessage("ea", `🔔 [ระบบ Team ERP] เปิดออเดอร์ใหม่สถานะรอดำเนินการ: ${msg.order.action} ${msg.order.symbol} ที่ราคา ${msg.order.entry_price}`);
+          fetchERPData();
         }
         else if (msg.type === "order_closed") {
           if (msg.orders) {
@@ -1913,7 +1915,7 @@ export default function Dashboard() {
                   onClick={() => setActiveMenu("Reports")}
                   className={getMenuButtonClass("Reports")}
                 >
-                  📈 Reports
+                  📊 ERP & Reports
                 </button>
               </nav>
             </div>

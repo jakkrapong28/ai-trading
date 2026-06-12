@@ -49,17 +49,13 @@ app.use(cors({
   exposedHeaders: ['X-Correlation-Id']
 }));
 
-// Capture raw body BEFORE json parsing for HMAC verification
-app.use((req, res, next) => {
-  let raw = '';
-  req.on('data', chunk => { raw += chunk; });
-  req.on('end', () => {
-    req.rawBody = raw;
-    next();
-  });
-});
+// Capture raw body inside JSON parsing to prevent double-reading the stream
+app.use(express.json({
+  verify: (req, res, buf, encoding) => {
+    req.rawBody = buf.toString(encoding || 'utf8');
+  }
+}));
 
-app.use(express.json());
 
 // Correlation ID injection (all requests)
 app.use(correlationId);
