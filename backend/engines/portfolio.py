@@ -180,10 +180,14 @@ class PortfolioEngine:
                         entry = t.entry_price or 0.0
                         lot = t.lot_size or 0.0
                         
+                        from backend.core import SYMBOLS
+                        spec = SYMBOLS.get(t.ticker, SYMBOLS["XAUUSD"])
+                        contract_size = spec.get("contractSize", 100)
+                        
                         if t.action == TradeAction.BUY:
-                            pnl = (current_price - entry) * lot
+                            pnl = (current_price - entry) * lot * contract_size
                         else:
-                            pnl = (entry - current_price) * lot
+                            pnl = (entry - current_price) * lot * contract_size
                             
                         floating_pnl += pnl
                         margin_used += entry * lot * 0.1 

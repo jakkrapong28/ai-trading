@@ -64,6 +64,7 @@ class Trade(Base):
     opened_at = Column(DateTime, default=datetime.utcnow)
     closed_at = Column(DateTime, nullable=True)
     highest_price = Column(Float, nullable=True)
+    lowest_price = Column(Float, nullable=True)
     tp1_hit = Column(Boolean, default=False)
     tp2_hit = Column(Boolean, default=False)
     tp3_hit = Column(Boolean, default=False)

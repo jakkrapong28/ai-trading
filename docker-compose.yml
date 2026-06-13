@@ -7,7 +7,8 @@ services:
     environment:
       POSTGRES_DB: ai_trading
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: yourpassword
+      # Sourced from env (.env); falls back to a local-only dev placeholder. Set POSTGRES_PASSWORD for any shared/prod DB.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-yourpassword}
     ports:
       - "5432:5432"
     volumes:

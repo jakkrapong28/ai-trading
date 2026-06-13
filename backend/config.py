@@ -29,11 +29,11 @@ FEATURE_FLAGS = {
     "emergency_stop": True,
     "alerting": True,
     "correlation_cap": True,      # Basic cap — active ตั้งแต่ Phase 1B
-    "smc_strategy": False,        # Phase 2
+    "smc_strategy": False,        # Phase B.2 — รอ closed trades ≥ 50
     "kelly_sizing": False,        # Phase 3 (หลัง backtest validate)
-    "mtf_strategy": False,
+    "mtf_strategy": True,         # Phase B.2 — เปิดแล้ว (is_candle_closed fixed)
     "session_filter": False,
-    "d1_bias_lock": False,
-    "confirmation_candle": False,
+    "d1_bias_lock": True,         # Phase B.2 — เปิดแล้ว (with pre-flight auto-disable)
+    "confirmation_candle": False, # Phase B.2 — รอ SMC เปิดก่อน
     "claude_fallback": False,
 }

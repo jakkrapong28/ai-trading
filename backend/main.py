@@ -32,6 +32,7 @@ from backend.engines.execution import start_execution_engine
 from backend.engines.portfolio import start_portfolio_engine, global_metrics
 from backend.agents import start_ai_decision_engine
 from backend.core import get_market_indicators, evaluate_strategy_rules, check_trade_risk
+from backend.core.candle_manager import CandleManager, candle_managers
 
 class CorrelationFilter(logging.Filter):
     def filter(self, record):
@@ -240,10 +241,13 @@ async def calculate_balances() -> List[dict]:
                 current_price = current["last_price"]
                 entry = t.entry_price or 0.0
                 lot = t.lot_size or 0.0
+                from backend.core import SYMBOLS
+                spec = SYMBOLS.get(t.ticker, SYMBOLS["XAUUSD"])
+                contract_size = spec.get("contractSize", 100)
                 if t.action.value == "BUY":
-                    floating_pnl += (current_price - entry) * lot
+                    floating_pnl += (current_price - entry) * lot * contract_size
                 else:
-                    floating_pnl += (entry - current_price) * lot
+                    floating_pnl += (entry - current_price) * lot * contract_size
         equity = balance + floating_pnl
         
         return [
@@ -529,7 +533,7 @@ async def handle_telegram_command_logic(cmd: str, user_tag: str) -> str:
             
             async def fire_erp_webhook_local(event_type: str, event_data: dict, trade_id: str, entry_price: float):
                 erp_url = os.getenv("ERP_WEBHOOK_URL", "http://localhost:5001/webhook/trade-event")
-                erp_api_key = os.getenv("ERP_API_KEY", "erp_dev_key_change_in_production_32chars")
+                erp_api_key = os.getenv("ERP_API_KEY", "")
                 erp_webhook_secret = os.getenv("ERP_WEBHOOK_SECRET", "")
                 idemp_key = str(uuid.uuid4())
                 
@@ -829,6 +833,66 @@ async def lifespan(app: FastAPI):
     start_execution_engine(event_bus)
     start_portfolio_engine(event_bus)
     
+    # Create CandleManagers immediately so engines can feed live ticks right away.
+    # The historical Yahoo backfill runs in the BACKGROUND so it never blocks startup —
+    # 40 sequential fetches (10 symbols x 4 timeframes, each up to a 15s timeout) could
+    # otherwise delay the server becoming ready for several minutes, making every
+    # endpoint hang with HTTP 000.
+    from backend.core.base import SYMBOLS
+    for symbol in SYMBOLS:
+        candle_managers[symbol] = CandleManager(symbol)
+
+    async def _bootstrap_candles():
+        for symbol in SYMBOLS:
+            try:
+                cm = candle_managers[symbol]
+                await cm.bootstrap_from_yahoo()
+                s = cm.status()
+                logger.info(f"CandleManager bootstrapped for {symbol}: {s['H1']['completed']} H1 candles")
+            except Exception as e:
+                logger.warning(f"Could not bootstrap CandleManager for {symbol}: {e}")
+
+        # ── Phase B: D1 Pre-flight check (after candles are available) ──
+        from backend.config import FEATURE_FLAGS
+        if FEATURE_FLAGS.get("d1_bias_lock", False):
+            from backend.core.mtf import verify_d1_candle_timestamps
+            for symbol in SYMBOLS:
+                try:
+                    cm = candle_managers.get(symbol)
+                    if cm is None:
+                        continue
+                    d1_df = cm.get_ohlc("D1", bars=30)
+                    if d1_df.empty:
+                        logger.warning(f"[D1 Pre-flight] {symbol}: No D1 data available")
+                        continue
+                    closed_count = await verify_d1_candle_timestamps(d1_df)
+                    if closed_count == 0:
+                        logger.warning(f"[D1 Pre-flight] {symbol}: 0/{len(d1_df)} bars match — disabling d1_bias_lock")
+                        FEATURE_FLAGS["d1_bias_lock"] = False
+                    else:
+                        logger.info(f"[D1 Pre-flight] {symbol}: {closed_count}/{len(d1_df)} D1 bars OK")
+                except Exception as e:
+                    logger.warning(f"[D1 Pre-flight] {symbol} check failed: {e}")
+
+    registry.register(_bootstrap_candles(), name="candle_bootstrap")
+
+    # ── Phase B: Schedule Calibration ───────────────────────
+    async def calibration_loop():
+        from backend.core.smc_calibrate import should_calibrate, run_calibration
+        while True:
+            try:
+                if await should_calibrate():
+                    logger.info("Calibration condition met — running calibration...")
+                    await run_calibration()
+                    logger.info("Calibration completed")
+                await asyncio.sleep(3600 * 6)  # check every 6 hours
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Calibration loop error: {e}")
+                await asyncio.sleep(3600)
+
+    registry.register(calibration_loop(), name="smc_calibration")
     registry.register(websocket_bridge(), name="ws_bridge_manager")
     registry.register(telegram_polling_loop(), name="telegram_bot_polling")
     
@@ -841,7 +905,9 @@ async def lifespan(app: FastAPI):
     await event_bus.close()
     await http_client.aclose()
     
-    engine.dispose()
+    # logger.info("Skipping engine.dispose() — engine is module-level from backend.shared.database.core")
+    # Engine pool is managed by SQLAlchemy engine from the module; calling dispose here
+    # would be harmless but unnecessary since the process is exiting.
     
     # Flush logs
     for handler in logging.root.handlers:
@@ -1167,7 +1233,7 @@ async def reset_data():
         raise HTTPException(status_code=500, detail=f"Database reset failed: {e}")
         
     try:
-        erp_api_key = os.getenv("ERP_API_KEY", "erp_dev_key_change_in_production_32chars")
+        erp_api_key = os.getenv("ERP_API_KEY", "")
         await http_client.delete(
             "http://localhost:5001/api/reset",
             headers={"X-Api-Key": erp_api_key}
@@ -1279,7 +1345,7 @@ async def close_order_endpoint(req: CloseOrderRequest):
         # Fire ERP Webhook
         async def fire_erp_webhook_local(event_type: str, event_data: dict, trade_id: str):
             erp_url = os.getenv("ERP_WEBHOOK_URL", "http://localhost:5001/webhook/trade-event")
-            erp_api_key = os.getenv("ERP_API_KEY", "erp_dev_key_change_in_production_32chars")
+            erp_api_key = os.getenv("ERP_API_KEY", "")
             erp_webhook_secret = os.getenv("ERP_WEBHOOK_SECRET", "")
             idemp_key = str(uuid.uuid4())
             
@@ -1403,7 +1469,7 @@ async def update_settings(req: SettingsRequest):
 @app.get("/api/erp/ledger")
 async def proxy_erp_ledger():
     try:
-        erp_api_key = os.getenv("ERP_API_KEY", "erp_dev_key_change_in_production_32chars")
+        erp_api_key = os.getenv("ERP_API_KEY", "")
         r = await http_client.get(
             "http://localhost:5001/api/ledger",
             headers={"X-Api-Key": erp_api_key}
@@ -1415,7 +1481,7 @@ async def proxy_erp_ledger():
 @app.get("/api/erp/tax-summary")
 async def proxy_erp_tax():
     try:
-        erp_api_key = os.getenv("ERP_API_KEY", "erp_dev_key_change_in_production_32chars")
+        erp_api_key = os.getenv("ERP_API_KEY", "")
         r = await http_client.get(
             "http://localhost:5001/api/tax-summary",
             headers={"X-Api-Key": erp_api_key}

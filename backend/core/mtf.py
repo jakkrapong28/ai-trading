@@ -16,15 +16,21 @@ TIMEFRAMES = {
 D1_SLOPE_THRESHOLD = 1.5  # configurable — EMA200 movement in ATR units over 20 days
 
 def is_candle_closed(tf: str, timestamp: datetime) -> bool:
+    """Check if a candle period has ended.
+    
+    The `timestamp` is the start of the candle period (e.g. 14:00 for H1 candle).
+    A candle is closed when the current time has passed the period end.
+    Works with both CandleManager (Yahoo bootstrap) and live tick data.
+    """
     now = datetime.now(timezone.utc)
-    # Ensure timezone awareness for comparison
     if timestamp.tzinfo is None:
         timestamp = timestamp.replace(tzinfo=timezone.utc)
     
-    if tf == "M15": return timestamp.minute % 15 == 0 and timestamp < now
-    if tf == "H1":  return timestamp.minute == 59 and timestamp < now
-    if tf == "H4":  return timestamp.hour % 4 == 3 and timestamp.minute == 59
-    if tf == "D1":  return timestamp.hour == 23 and timestamp.minute == 59
+    from datetime import timedelta
+    if tf == "M15": return (timestamp + timedelta(minutes=15)) <= now
+    if tf == "H1":  return (timestamp + timedelta(hours=1)) <= now
+    if tf == "H4":  return (timestamp + timedelta(hours=4)) <= now
+    if tf == "D1":  return (timestamp + timedelta(days=1)) <= now
     return True
 
 def calculate_mtf_indicators(ohlc: Dict[str, pd.DataFrame]) -> Dict[str, Any]:

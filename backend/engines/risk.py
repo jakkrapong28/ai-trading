@@ -291,7 +291,7 @@ class RiskEngine:
                     inds = calculate_indicators(df)
                     atr = inds["atr"] or atr
                     if len(df) >= 200:
-                        regime, _, _, _ = calculate_regime(df)
+                        regime, _, _, _, _ = calculate_regime(df)
 
                 atr = validate_atr(atr, decision.ticker, "risk.py: atr calculation")
 
@@ -304,10 +304,15 @@ class RiskEngine:
                 db_reject = backend_main.current_risk_input.get("rejectThreshold", 3.0)
                 db_risk_pct = backend_main.current_risk_input.get("riskPct", 1.5)
 
-                # Simulate broker spread
-                import random
-                broker_spread = round(random.uniform(1.5, 3.2), 2)
-                
+                # Real broker spread from live bid/ask (no randomness — risk filters must reflect the market)
+                bid = price_data.get("bid")
+                ask = price_data.get("ask")
+                if bid and ask and ask > bid:
+                    broker_spread = round(ask - bid, 2)
+                else:
+                    # Fallback for feeds without bid/ask (e.g. mock stocks): use the configured normal spread, never random
+                    broker_spread = 2.0
+
                 # Check Reject > rejectThreshold (3.0) or broker_spread > spread limit
                 if broker_spread > db_reject:
                     await self._reject(decision, f"สเปรดโบรกเกอร์ ({broker_spread}) เกินเกณฑ์ห้ามเทรดเด็ดขาด ({db_reject})")

@@ -10,6 +10,7 @@ from backend.shared.schema.events import MarketRegimeEvent, SignalEvent, NewsSen
 from backend.engines.market_data import get_latest_price
 from backend.shared.database.core import SessionLocal
 from backend.shared.database.models import Trade, TradeStatus, SignalCooldown
+from backend.core.candle_manager import candle_managers
 
 logger = logging.getLogger("strategy-engine")
 
@@ -186,21 +187,31 @@ class StrategyEngine:
                         from backend.core.volume_profile import calculate_volume_profile
                         
                         atr = regime.atr
-                        concepts = detect_smc_concepts(df, atr)
                         
-                        # Evaluate Volume Profile
-                        vp = calculate_volume_profile(df)
+                        # Use H1 candles from CandleManager for SMC detection when available
+                        cm = candle_managers.get(ticker)
+                        smc_df = cm.get_ohlc("H1", bars=100) if cm else None
+                        if smc_df is not None and len(smc_df) >= 20:
+                            concepts = detect_smc_concepts(smc_df, atr)
+                            vp = calculate_volume_profile(smc_df)
+                        else:
+                            concepts = {"mss": False, "ob": False, "fvg": False, "sweep": False, "sr_level": False}
+                            vp = {"poc": 0.0, "vah": 0.0, "val": 0.0, "delta_volume": 0.0}
                         
                         d1_aligned = True
                         if FEATURE_FLAGS.get("mtf_strategy", False):
                             from backend.core.mtf import calculate_mtf_indicators, check_d1_bias_lock
-                            # Build timeframe dataframes
-                            ohlc_dict = {
-                                "M15": df.rename(columns={"price": "close"}),
-                                "H1": df.rename(columns={"price": "close"}),
-                                "H4": df.rename(columns={"price": "close"}),
-                                "D1": df.rename(columns={"price": "close"})
-                            }
+                            # Get real timeframe data from CandleManager
+                            cm = candle_managers.get(ticker)
+                            if cm is not None:
+                                ohlc_dict = cm.get_all_timeframes()
+                            else:
+                                ohlc_dict = {
+                                    "M15": df.rename(columns={"price": "close"}),
+                                    "H1": df.rename(columns={"price": "close"}),
+                                    "H4": df.rename(columns={"price": "close"}),
+                                    "D1": df.rename(columns={"price": "close"})
+                                }
                             for tf, odf in ohlc_dict.items():
                                 odf.index = pd.to_datetime(odf["timestamp"])
                             
@@ -222,7 +233,8 @@ class StrategyEngine:
                             # Confirmation Candle check
                             if FEATURE_FLAGS.get("confirmation_candle", True):
                                 from backend.core import confirm_signal
-                                ohlc_df = df.rename(columns={"price": "close"})
+                                cm = candle_managers.get(ticker)
+                                ohlc_df = cm.get_ohlc("H1", bars=100) if cm else df.rename(columns={"price": "close"})
                                 temp_sig = {"action": action, "confidence_score": conf, "price_at_signal": price_data["last_price"]}
                                 if not confirm_signal(temp_sig, ohlc_df, atr):
                                     logger.info(f"[Strategy] {ticker} {action} signal pending confirmation candle. Skipping.")

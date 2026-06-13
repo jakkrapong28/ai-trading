@@ -76,11 +76,12 @@ class ExecutionEngine:
                 
                 trade_id = res["order_id"]
                 
-                # Initialize highest price tracking
+                # Initialize price extreme tracking
                 db = SessionLocal()
                 t_record = db.query(Trade).filter(Trade.id == trade_id).first()
                 if t_record:
                     t_record.highest_price = approved.signal_price
+                    t_record.lowest_price = approved.signal_price
                     db.commit()
                 db.close()
                 
@@ -188,17 +189,19 @@ class ExecutionEngine:
                         tp = trade.tp_price
                         lot_size = trade.lot_size
                         
-                        # Initialize highest price if None
+                        # Initialize peak tracking if None
                         if trade.highest_price is None:
                             trade.highest_price = entry
+                        if trade.lowest_price is None:
+                            trade.lowest_price = entry
                         
                         # Track peak favorable price
                         if action == "BUY":
                             if price > trade.highest_price:
                                 trade.highest_price = price
                         else:
-                            if price < trade.highest_price:
-                                trade.highest_price = price
+                            if price < trade.lowest_price:
+                                trade.lowest_price = price
                         
                         db.commit()
                         
@@ -288,14 +291,18 @@ class ExecutionEngine:
                                     db.commit()
                                     logger.info(f"[{ticker}] Adaptive Trailing: SL moved to {trailing_sl:.2f} (1.5 ATR)")
                             elif current_r >= 3.5:
-                                # Chandelier Exit (trailing 1 ATR from highest price)
-                                peak = trade.highest_price
-                                trailing_sl = peak - 1 * atr if action == "BUY" else peak + 1 * atr
+                                # Chandelier Exit (trailing 1 ATR from extreme price)
+                                if action == "BUY":
+                                    peak = trade.highest_price
+                                    trailing_sl = peak - 1 * atr
+                                else:
+                                    peak = trade.lowest_price
+                                    trailing_sl = peak + 1 * atr
                                 if (action == "BUY" and trailing_sl > sl) or (action == "SELL" and trailing_sl < sl):
                                     await self.broker.modify_order(trade_id, stop_loss=trailing_sl)
                                     trade.sl_price = trailing_sl
                                     db.commit()
-                                    logger.info(f"[{ticker}] Chandelier Exit: SL moved to {trailing_sl:.2f} (1 ATR from peak {peak:.2f})")
+                                    logger.info(f"[{ticker}] Chandelier Exit: SL moved to {trailing_sl:.2f} (1 ATR from {'lowest' if action == 'SELL' else 'highest'} {peak:.2f})")
                         
                         # 3. Check Standard Exit Conditions
                         if sl is None:
@@ -375,8 +382,16 @@ class ExecutionEngine:
 
     async def _fire_erp_webhook(self, event_type: str, event_data: dict, trade_id: str):
         erp_url = os.getenv("ERP_WEBHOOK_URL", "http://localhost:5001/webhook/trade-event")
-        erp_api_key = os.getenv("ERP_API_KEY", "erp_dev_key_change_in_production_32chars")
+        erp_api_key = os.getenv("ERP_API_KEY", "")
         erp_webhook_secret = os.getenv("ERP_WEBHOOK_SECRET", "")
+        # Fail closed: never fire a webhook with a missing/placeholder secret — ERP would either
+        # reject it or (worse) accept a publicly-known default key.
+        if not erp_api_key or not erp_webhook_secret:
+            logger.error(
+                f"[ERP] Skipping webhook '{event_type}' for {trade_id}: "
+                "ERP_API_KEY / ERP_WEBHOOK_SECRET not configured in environment."
+            )
+            return
         idemp_key = str(uuid.uuid4())
 
         # Prepare the payload for ERP

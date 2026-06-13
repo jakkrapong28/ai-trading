@@ -8,6 +8,7 @@ from typing import Dict, Any
 
 from backend.shared.events.core import EventBus, CH_MARKET_DATA
 from backend.shared.schema.events import MarketTickEvent
+from backend.core.candle_manager import candle_managers
 
 logger = logging.getLogger("market-data-service")
 
@@ -75,6 +76,11 @@ async def binance_ws_client(event_bus: EventBus):
                             "timestamp": ts
                         }
                         
+                        # Feed tick into CandleManager for OHLC aggregation
+                        cm = candle_managers.get(ticker)
+                        if cm:
+                            cm.on_tick(price, volume, ts)
+
                         tick = MarketTickEvent(
                             ticker=ticker,
                             price=price,
@@ -128,6 +134,11 @@ async def finnhub_ws_client(event_bus: EventBus):
                                 "timestamp": ts
                             }
                             
+                            # Feed tick into CandleManager for OHLC aggregation
+                            cm = candle_managers.get(ticker)
+                            if cm:
+                                cm.on_tick(price, volume, ts)
+
                             tick = MarketTickEvent(
                                 ticker=ticker,
                                 price=price,
@@ -165,6 +176,11 @@ async def mock_stocks_generator(event_bus: EventBus):
                     "volume": volume,
                     "timestamp": ts
                 }
+                # Feed tick into CandleManager for OHLC aggregation
+                cm = candle_managers.get(ticker)
+                if cm:
+                    cm.on_tick(price, volume, ts)
+
                 tick = MarketTickEvent(
                     ticker=ticker,
                     price=price,
