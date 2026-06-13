@@ -104,23 +104,44 @@ interface RoomDef {
 }
 
 const ROOMS_CONFIG: RoomDef[] = [
-  { id: "report", name: "Report AI", role: "ฝ่ายเขียนรายงาน", color: "#1e113a", border: "#6c2e9c", labelColor: "#d8b4fe", emoji: "📋", bubble: "สร้างรายงานสรุป...", status: "idle", col: 0, row: 0 },
-  { id: "audit", name: "Audit AI", role: "ฝ่ายความถูกต้อง", color: "#160f29", border: "#3b2c80", labelColor: "#a78bfa", emoji: "🔍", bubble: "ตรวจสอบประวัติ...", status: "online", col: 1, row: 0 },
-  { id: "ceo", name: "CEO Agent", role: "ผู้นำบัญชาการ", color: "#0d1b2a", border: "#1b4965", labelColor: "#60a5fa", emoji: "🕴️", bubble: "แจกงานให้ทีม!", status: "online", col: 2, row: 0 },
+  { id: "report", name: "Report AI", role: "ฝ่ายเขียนรายงาน", color: "rgba(16, 185, 129, 0.05)", border: "#10b981", labelColor: "#10b981", emoji: "📋", bubble: "", status: "online", col: 0, row: 0 },
+  { id: "audit", name: "Audit AI", role: "ฝ่ายตรวจสอบ", color: "rgba(16, 185, 129, 0.05)", border: "#10b981", labelColor: "#10b981", emoji: "🔍", bubble: "", status: "online", col: 1, row: 0 },
+  { id: "ceo", name: "CEO Agent", role: "ผู้บัญชาการ", color: "rgba(16, 185, 129, 0.05)", border: "#10b981", labelColor: "#10b981", emoji: "👤", bubble: "", status: "online", col: 2, row: 0 },
   
-  { id: "finance", name: "Finance AI", role: "ฝ่ายการเงิน ERP", color: "#0f2a2a", border: "#1c5c5c", labelColor: "#22d3ee", emoji: "💰", bubble: "บันทึกบัญชีแยกประเภท...", status: "online", col: 0, row: 1 },
-  { id: "ea", name: "EA Bot", role: "ฝ่ายยิงออเดอร์", color: "#0e0e26", border: "#252575", labelColor: "#818cf8", emoji: "🤖", bubble: "รอยิงคำสั่ง...", status: "busy", col: 1, row: 1 },
-  { id: "chart", name: "Chart AI", role: "วิเคราะห์กราฟ", color: "#0a1f11", border: "#184f24", labelColor: "#34d399", emoji: "📊", bubble: "ประเมินแนวรับ...", status: "busy", col: 2, row: 1 },
+  { id: "finance", name: "Finance AI", role: "ฝ่ายการเงิน ERP", color: "rgba(16, 185, 129, 0.05)", border: "#10b981", labelColor: "#10b981", emoji: "💰", bubble: "", status: "online", col: 0, row: 1 },
+  { id: "ea", name: "EA Bot", role: "ฝ่ายอัลกอริทึม", color: "rgba(129, 140, 248, 0.05)", border: "#818cf8", labelColor: "#818cf8", emoji: "🤖", bubble: "", status: "busy", col: 1, row: 1 },
+  { id: "chart", name: "Chart AI", role: "วิเคราะห์กราฟ", color: "rgba(16, 185, 129, 0.05)", border: "#10b981", labelColor: "#10b981", emoji: "📊", bubble: "", status: "online", col: 2, row: 1 },
   
-  { id: "strategy", name: "Strategy AI", role: "กลยุทธ์การลงทุน", color: "#221a0f", border: "#523c1c", labelColor: "#fbbf24", emoji: "🎯", bubble: "หมุนสภาวะตลาด...", status: "online", col: 0, row: 2 },
-  { id: "alert", name: "Alert AI", role: "แจ้งเตือนภัยพอร์ต", color: "#2c1611", border: "#6b2c1f", labelColor: "#f97316", emoji: "🔔", bubble: "เช็คสเปรดโบรกเกอร์...", status: "busy", col: 1, row: 2 },
-  { id: "risk", name: "Risk AI", role: "ฝ่ายควบคุมความเสี่ยง", color: "#2c0e0e", border: "#6b1c1c", labelColor: "#f87171", emoji: "⚠️", bubble: "เช็ค Limit พอร์ต!", status: "busy", col: 2, row: 2 },
+  { id: "strategy", name: "Strategy AI", role: "กลยุทธ์การลงทุน", color: "rgba(251, 191, 36, 0.05)", border: "#fbbf24", labelColor: "#fbbf24", emoji: "🎯", bubble: "", status: "busy", col: 0, row: 2 },
+  { id: "alert", name: "Alert AI", role: "แจ้งเตือนภัยพอร์ต", color: "rgba(251, 191, 36, 0.05)", border: "#fbbf24", labelColor: "#fbbf24", emoji: "🔔", bubble: "", status: "busy", col: 1, row: 2 },
+  { id: "risk", name: "Risk AI", role: "ควบคุมความเสี่ยง", color: "rgba(239, 68, 68, 0.05)", border: "#ef4444", labelColor: "#ef4444", emoji: "⚠️", bubble: "", status: "busy", col: 2, row: 2 },
+];
+
+const CONNECTIONS = [
+  // Outer Ring
+  { from: "report", to: "finance", color: "#10b981" },
+  { from: "report", to: "audit", color: "#10b981" },
+  { from: "audit", to: "ceo", color: "#10b981" },
+  { from: "finance", to: "strategy", color: "#10b981" },
+  { from: "ceo", to: "chart", color: "#10b981" },
+  { from: "strategy", to: "alert", color: "#fbbf24" },
+  { from: "chart", to: "risk", color: "#ef4444" },
+  { from: "alert", to: "risk", color: "#ef4444" },
+  // Core to Outer Connections
+  { from: "ea", to: "report", color: "#10b981" },
+  { from: "ea", to: "audit", color: "#10b981" },
+  { from: "ea", to: "ceo", color: "#10b981" },
+  { from: "ea", to: "finance", color: "#10b981" },
+  { from: "ea", to: "chart", color: "#10b981" },
+  { from: "ea", to: "strategy", color: "#fbbf24" },
+  { from: "ea", to: "alert", color: "#fbbf24" },
+  { from: "ea", to: "risk", color: "#ef4444" },
 ];
 
 const AGENT_COLORS: Record<string, string> = {
-  ceo: "#3b82f6", chart: "#10b981", audit: "#a855f7",
-  ea: "#6366f1", risk: "#ef4444", finance: "#06b6d4",
-  strategy: "#f59e0b", alert: "#f97316", report: "#c084fc"
+  ceo: "#10b981", chart: "#10b981", audit: "#10b981",
+  ea: "#818cf8", risk: "#ef4444", finance: "#10b981",
+  strategy: "#fbbf24", alert: "#fbbf24", report: "#10b981"
 };
 
 const parseUTCDate = (dateStr?: string) => {
@@ -162,8 +183,36 @@ const SYMBOLS_LIST = [
   { symbol: "AMZN", name: "Amazon.com, Inc.", category: "Stock" }
 ];
 
+// --- TradingView Chart Widget ---
+const TradingViewWidget = ({ symbol }: { symbol: string }) => {
+  const getTradingViewSymbol = (sym: string) => {
+    if (sym === "XAUUSD") return "OANDA:XAUUSD";
+    if (sym === "EURUSD") return "FX:EURUSD";
+    if (sym === "TSLA") return "NASDAQ:TSLA";
+    if (sym === "AAPL") return "NASDAQ:AAPL";
+    if (sym === "NVDA") return "NASDAQ:NVDA";
+    if (sym === "MSFT") return "NASDAQ:MSFT";
+    if (sym === "AMZN") return "NASDAQ:AMZN";
+    if (sym.endsWith("USDT")) return `BINANCE:${sym}`;
+    return `BINANCE:${sym}`;
+  };
+
+  const tvSymbol = getTradingViewSymbol(symbol);
+
+  return (
+    <div className="w-full h-full bg-[#0c0d14]">
+      <iframe
+        id="tradingview-widget"
+        src={`https://s.tradingview.com/widgetembed/?frameElementId=tradingview-widget&symbol=${tvSymbol}&interval=5&hidesidetoolbar=1&symboledit=0&saveimage=1&toolbarbg=131722&studies=%5B%5D&theme=dark&style=1&timezone=Asia%2FBangkok&studies_overrides=%7B%7D&overrides=%7B%7D&enabled_features=%5B%5D&disabled_features=%5B%5D&locale=th`}
+        style={{ width: "100%", height: "100%", border: "none" }}
+        allowFullScreen
+      />
+    </div>
+  );
+};
+
 export default function Dashboard() {
-  const [activeMenu, setActiveMenu] = useState("Office Overview");
+  const [activeMenu, setActiveMenu] = useState("Overview");
   const [wsStatus, setWsStatus] = useState<"connecting" | "connected" | "error">("connecting");
   
   // --- สเตตจำลองจากระบบเทรดและ ERP ---
@@ -176,6 +225,7 @@ export default function Dashboard() {
   const [mode, setMode] = useState("watch");
   const [balances, setBalances] = useState<Balance[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
+  const [activeTab, setActiveTab] = useState("POSITIONS");
   const [filterDate, setFilterDate] = useState("");
   
   const [featureFlags, setFeatureFlags] = useState<Record<string, boolean>>({});
@@ -186,6 +236,31 @@ export default function Dashboard() {
   const [correlationRejections, setCorrelationRejections] = useState({ count: 0 });
   const [signalActivity, setSignalActivity] = useState<SignalActivity[]>([]);
 
+  // --- AI Activity Log State ---
+  interface ActivityLog {
+    time: string;
+    agent: string;
+    text: string;
+    color: string;
+    dotColor: string;
+  }
+  const [activityLogs, setActivityLogs] = useState<ActivityLog[]>([
+    { time: "10:37:12", agent: "Risk AI", text: "Position check passed", color: "#ef4444", dotColor: "#10b981" },
+    { time: "10:37:09", agent: "EA Bot", text: "Order submitted BTCUSDT Long 0.02", color: "#6366f1", dotColor: "#3b82f6" },
+    { time: "10:36:58", agent: "Strategy AI", text: "Generated Long signal Confidence: 78%", color: "#fbbf24", dotColor: "#a855f7" },
+    { time: "10:36:41", agent: "Market Scanner", text: "Found 3 opportunities", color: "#06b6d4", dotColor: "#22d3ee" },
+    { time: "10:36:30", agent: "News AI", text: "No high impact news", color: "#f97316", dotColor: "#fbbf24" }
+  ]);
+
+  const addActivityLog = (agent: string, text: string, dotColor = "#10b981") => {
+    const timeStr = new Date().toTimeString().split(" ")[0];
+    const color = AGENT_CHAT_MAP[agent.toLowerCase().replace(" ", "")]?.color || "#94a3b8";
+    setActivityLogs(prev => [
+      { time: timeStr, agent, text, color, dotColor },
+      ...prev
+    ].slice(0, 50));
+  };
+
   const addSignalActivity = (act: Omit<SignalActivity, "id" | "time">) => {
     const entry: SignalActivity = { ...act, id: crypto.randomUUID?.() || Math.random().toString(36), time: new Date().toISOString() };
     setSignalActivity(prev => [entry, ...prev].slice(0, 50));
@@ -193,9 +268,9 @@ export default function Dashboard() {
 
   const getMenuButtonClass = (menuName: string) => {
     const isActive = activeMenu === menuName;
-    return `w-full flex items-center justify-between px-3 py-1.5 text-[12.5px] rounded text-left transition-all duration-300 ${
+    return `w-full flex items-center justify-between px-3.5 py-2 text-[12px] rounded-md transition-all duration-200 ${
       isActive 
-        ? "bg-white/10 text-emerald-400 border-l-2 border-emerald-400 shadow-[0_0_15px_rgba(16,185,129,0.15)] backdrop-blur-sm font-bold" 
+        ? "bg-[#131d27]/80 text-white font-bold" 
         : "text-[#7a9bbf] hover:bg-white/5 hover:text-white"
     }`;
   };
@@ -244,6 +319,7 @@ export default function Dashboard() {
   // --- อ้างอิงสำหรับ Canvas และ WebSocket ---
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
+  let centers: Record<string, { cx: number; cy: number }> = {};
   const chatEndRef = useRef<HTMLDivElement | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const symbolRef = useRef(symbol);
@@ -259,6 +335,7 @@ export default function Dashboard() {
   const activeTradesCount = (orders || []).filter((o) => o.status === "PENDING" || o.status === "OPEN").length;
   const closedOrders = (orders || []).filter((o) => o.status === "CLOSED");
   const todayPnLSum = closedOrders.reduce((sum, o) => sum + o.pnl, 0);
+  const pnlPct = totalEquity > 0 ? (todayPnLSum / (totalEquity - todayPnLSum)) * 100 : 0.0;
 
   // เลื่อนหน้าต่างแชทลงด้านล่างอัตโนมัติ
   useEffect(() => {
@@ -455,30 +532,46 @@ export default function Dashboard() {
           if (msg.indicators) setIndicators(msg.indicators);
           if (msg.signal) setSignal(msg.signal);
           if (msg.risk) setRisk(msg.risk);
+
+          // 10% chance to rate-limit log price ticks in AI Activity Log
+          if (Math.random() < 0.1) {
+            addActivityLog("Market Scanner", `Found opportunities for ${msg.symbol}`, "#22d3ee");
+          }
         } 
         else if (msg.type === "risk:signal:approved") {
+          const ticker = msg.data?.ticker || msg.ticker || "?";
+          const action = msg.data?.action || msg.action || "?";
           addSignalActivity({
-            ticker: msg.data?.ticker || msg.ticker || "?",
-            action: msg.data?.action || msg.action || "?",
+            ticker,
+            action,
             status: "APPROVED",
             sl: msg.data?.stop_loss || msg.stop_loss,
             tp: msg.data?.take_profit || msg.take_profit,
           });
+          addActivityLog("Risk AI", "Position check passed", "#10b981");
+          addActivityLog("EA Bot", `Order submitted ${ticker} ${action} 0.02`, "#3b82f6");
         }
         else if (msg.type === "risk:signal:rejected") {
+          const ticker = msg.data?.ticker || msg.ticker || "?";
+          const action = msg.data?.action || msg.action || "?";
+          const reason = msg.data?.reason || msg.reason || "ไม่มีเหตุผล";
           addSignalActivity({
-            ticker: msg.data?.ticker || msg.ticker || "?",
-            action: msg.data?.action || msg.action || "?",
+            ticker,
+            action,
             status: "REJECTED",
-            reason: msg.data?.reason || msg.reason || "ไม่มีเหตุผล",
+            reason,
           });
+          addActivityLog("Risk AI", `Blocked: ${reason}`, "#ef4444");
         }
         else if (msg.type === "ai:decision:final") {
+          const ticker = msg.data?.ticker || msg.ticker || "?";
+          const action = msg.data?.action || msg.action || "?";
           addSignalActivity({
-            ticker: msg.data?.ticker || msg.ticker || "?",
-            action: msg.data?.action || msg.action || "?",
+            ticker,
+            action,
             status: "VOTING",
           });
+          addActivityLog("Strategy AI", `Generated ${action} signal for ${ticker}`, "#a855f7");
         }
         else if (msg.type === "agent_typing") {
           const agentKey = mapAgentNameToRoomId(msg.message.agent);
@@ -494,10 +587,14 @@ export default function Dashboard() {
           }
         } 
         else if (msg.type === "order_opened") {
-          setOrders((prev) => [msg.order, ...prev]);
+          setOrders((prev) => {
+            if (prev.some(o => o.id === msg.order.id)) return prev;
+            return [msg.order, ...prev];
+          });
           if (msg.balances) setBalances(msg.balances);
           addChatMessage("ea", `🔔 [ระบบ Team ERP] เปิดออเดอร์ใหม่สถานะรอดำเนินการ: ${msg.order.action} ${msg.order.symbol} ที่ราคา ${msg.order.entry_price}`);
           fetchERPData();
+          addActivityLog("EA Bot", `Order Opened: ${msg.order.action} ${msg.order.symbol} @${msg.order.entry_price}`, "#3b82f6");
         }
         else if (msg.type === "order_closed") {
           if (msg.orders) {
@@ -515,6 +612,9 @@ export default function Dashboard() {
             ag.speakTimer = 120;
           }
           fetchERPData();
+          if (msg.order) {
+            addActivityLog("EA Bot", `Order Closed: ${msg.order.symbol} PnL: $${msg.order.pnl.toFixed(2)}`, msg.order.pnl >= 0 ? "#10b981" : "#ef4444");
+          }
         }
       };
 
@@ -772,15 +872,9 @@ export default function Dashboard() {
       canvas.style.height = H + "px";
       ctx.scale(SCALE, SCALE);
 
-      // Fit all rooms in available space
-      // base sizes: sizeX=150, sizeY=87, wallH=60
-      // Total height span: wallH + 5*sizeY (bottom room center at row+col=4 is 4*sizeY below grid center)
-      // + sizeY for bottom half of diamond + ~25px for desk furniture + agent
       const availableH = H - BOTTOM_BAR_H;
       const wallToSizeXRatio = 60 / 150;
       const sizeYToSizeXRatio = 87 / 150;
-      // Height constraint: wallH + 5.5*sizeY + 25 <= 0.88 * availableH
-      const furniturePad = 25; // pixels for desk+agent below room center
       const maxByH = (availableH * 0.85 - 20) / (wallToSizeXRatio + 5.2 * sizeYToSizeXRatio);
       const maxByW = (W * 0.85) / 6.0;
       const targetSizeX = Math.min(maxByH, maxByW);
@@ -789,33 +883,11 @@ export default function Dashboard() {
       sizeX = Math.round(150 * scaleMultiplier);
       sizeY = Math.round(87 * scaleMultiplier);
       wallHeight = Math.round(60 * scaleMultiplier);
-      charScale = 1.8 * scaleMultiplier;
 
       centers = getRoomCenters(W, H);
     };
 
     resize();
-
-    if (agentsStateRef.current.length === 0) {
-      agentsStateRef.current = ROOMS_CONFIG.map((r) => {
-        return {
-          id: r.id,
-          color: AGENT_COLORS[r.id] || "#ffffff",
-          lx: 0, 
-          ly: 0, 
-          tx: 0, 
-          ty: 0,
-          speed: 0.55 + Math.random() * 0.3,
-          facing: "down",
-          speaking: false,
-          speakTimer: 0,
-          idleTimer: Math.random() * 60,
-          moving: false,
-          bubble: "",
-          bubbleTimer: 0,
-        };
-      });
-    }
 
     let animFrameId: number;
 
@@ -838,7 +910,6 @@ export default function Dashboard() {
       if (!pos) return;
       const { cx, cy } = pos;
 
-      // 1. วาดพื้นห้องนีออน (Sleek Tech Metallic Grid Floor)
       ctx.fillStyle = r.color;
       ctx.beginPath();
       ctx.moveTo(cx, cy - sizeY);
@@ -848,10 +919,9 @@ export default function Dashboard() {
       ctx.closePath();
       ctx.fill();
 
-      // เส้นตารางเรืองแสงสีนีออน (Cyber Grid)
-      ctx.strokeStyle = r.border + "44";
+      ctx.strokeStyle = r.border + "33";
       ctx.lineWidth = 0.8;
-      const step = 5;
+      const step = 4;
       for (let i = 1; i < step; i++) {
         const offsetPct = i / step;
         const xStart1 = cx - sizeX + sizeX * offsetPct;
@@ -869,11 +939,10 @@ export default function Dashboard() {
         ctx.stroke();
       }
 
-      // วาดขอบพื้นห้องนีออนเรืองแสง (Neon Glowing Border)
       ctx.strokeStyle = r.border;
-      ctx.lineWidth = 2.0;
+      ctx.lineWidth = 1.5;
       ctx.shadowColor = r.border;
-      ctx.shadowBlur = 10;
+      ctx.shadowBlur = 6;
       ctx.beginPath();
       ctx.moveTo(cx, cy - sizeY);
       ctx.lineTo(cx + sizeX, cy);
@@ -881,390 +950,7 @@ export default function Dashboard() {
       ctx.lineTo(cx - sizeX, cy);
       ctx.closePath();
       ctx.stroke();
-      ctx.shadowBlur = 0; // Reset shadow blur
-
-      // 2. วาดผนัง 3D กระจกใสไฮเทค (Sleek Tech Glass Walls)
-      // เสาหลักเสามุมเรืองแสง (Glowing pillars)
-      ctx.fillStyle = "#1e293b";
-      ctx.fillRect(cx - sizeX - 2, cy - wallHeight, 4, wallHeight);
-      ctx.fillRect(cx + sizeX - 2, cy - wallHeight, 4, wallHeight);
-      ctx.fillRect(cx - 2, cy - sizeY - wallHeight, 4, wallHeight);
-
-      // วาดแผงกระจกสะท้อนแสงสีฟ้านีออน
-      ctx.fillStyle = "rgba(6, 182, 212, 0.04)";
-      ctx.beginPath();
-      ctx.moveTo(cx - sizeX, cy);
-      ctx.lineTo(cx, cy - sizeY);
-      ctx.lineTo(cx, cy - sizeY - wallHeight);
-      ctx.lineTo(cx - sizeX, cy - wallHeight);
-      ctx.closePath();
-      ctx.fill();
-      ctx.strokeStyle = r.border + "33";
-      ctx.stroke();
-
-      ctx.fillStyle = "rgba(6, 182, 212, 0.02)";
-      ctx.beginPath();
-      ctx.moveTo(cx, cy - sizeY);
-      ctx.lineTo(cx + sizeX, cy);
-      ctx.lineTo(cx + sizeX, cy - wallHeight);
-      ctx.lineTo(cx, cy - sizeY - wallHeight);
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
-
-      // ════════════════════════════════════════════════════════
-      // 3. วาดเฟอร์นิเจอร์ + คอมพิวเตอร์ทุกห้อง — Real Office Look
-      // ════════════════════════════════════════════════════════
-      const S = scaleMultiplier;
-
-      // ── ต้นไม้ / หม้อไม้ ประดับทั่วไป ──
-      const drawPlant = (px: number, py: number) => {
-        ctx.fillStyle = "#3d2b1f";
-        ctx.fillRect(px - 4*S, py, 8*S, 7*S);
-        ctx.fillStyle = "#166534";
-        ctx.beginPath();
-        ctx.arc(px, py - 7*S, 6*S, 0, Math.PI*2); ctx.fill();
-        ctx.fillStyle = "#15803d";
-        ctx.beginPath();
-        ctx.arc(px - 5*S, py - 4*S, 4*S, 0, Math.PI*2); ctx.fill();
-        ctx.beginPath();
-        ctx.arc(px + 5*S, py - 4*S, 4*S, 0, Math.PI*2); ctx.fill();
-      };
-
-      // ── วาดโต๊ะ (isometric desk top + side) ──
-      const drawDesk = (bx: number, by: number, dw: number, dd: number, col: string, accent: string) => {
-        // ข้างมือเซ้า (left face)
-        ctx.fillStyle = "#0f172a";
-        ctx.beginPath();
-        ctx.moveTo(bx,      by);
-        ctx.lineTo(bx - dd*0.4, by + dd*0.35);
-        ctx.lineTo(bx - dd*0.4, by + dd*0.35 + 9*S);
-        ctx.lineTo(bx,      by + 9*S);
-        ctx.closePath(); ctx.fill();
-        // หน้า (right face)
-        ctx.fillStyle = "#1a2744";
-        ctx.beginPath();
-        ctx.moveTo(bx,      by);
-        ctx.lineTo(bx + dw, by - dw*0.22);
-        ctx.lineTo(bx + dw, by - dw*0.22 + 9*S);
-        ctx.lineTo(bx,      by + 9*S);
-        ctx.closePath(); ctx.fill();
-        // หน้าโต๊ะ (top surface)
-        ctx.fillStyle = col;
-        ctx.strokeStyle = accent;
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(bx,           by);
-        ctx.lineTo(bx + dw,      by - dw*0.22);
-        ctx.lineTo(bx + dw - dd*0.4, by - dw*0.22 + dd*0.35);
-        ctx.lineTo(bx - dd*0.4,  by + dd*0.35);
-        ctx.closePath(); ctx.fill(); ctx.stroke();
-      };
-
-      // ── จอคอมพิวเตอร์แบบ isometric (monitor on desk) ──
-      const drawMonitor = (mx: number, my: number, mw: number, mh: number, screenColor: string, content?: () => void) => {
-        // ขาตั้ง
-        ctx.fillStyle = "#334155";
-        ctx.fillRect(mx + mw*0.45, my + mh, mw*0.1, 5*S);
-        ctx.fillRect(mx + mw*0.3, my + mh + 5*S, mw*0.4, 2*S);
-        // กรอบจอ
-        ctx.fillStyle = "#1e293b";
-        ctx.beginPath();
-        ctx.roundRect(mx - 2*S, my - 2*S, mw + 4*S, mh + 4*S, 2*S);
-        ctx.fill();
-        // หน้าจอ
-        ctx.fillStyle = screenColor;
-        ctx.beginPath();
-        ctx.roundRect(mx, my, mw, mh, 1*S);
-        ctx.fill();
-        if (content) content();
-      };
-
-      // ── MacBook (slim laptop) ──
-      const drawMacBook = (lx: number, ly: number, lw: number, accent: string) => {
-        const lh = lw * 0.62;
-        // lid (screen)
-        ctx.fillStyle = "#1c2333";
-        ctx.beginPath(); ctx.roundRect(lx, ly - lh, lw, lh, 2*S); ctx.fill();
-        ctx.fillStyle = "#0a0f1e";
-        ctx.beginPath(); ctx.roundRect(lx + 2*S, ly - lh + 2*S, lw - 4*S, lh - 4*S, 1*S); ctx.fill();
-        // Apple logo
-        ctx.fillStyle = accent + "99";
-        ctx.beginPath(); ctx.arc(lx + lw/2, ly - lh/2, 3*S, 0, Math.PI*2); ctx.fill();
-        // base
-        ctx.fillStyle = "#374151";
-        ctx.beginPath(); ctx.roundRect(lx - 2*S, ly, lw + 4*S, 4*S, 1*S); ctx.fill();
-        // keyboard glow
-        ctx.fillStyle = accent + "22";
-        ctx.beginPath(); ctx.roundRect(lx + 2*S, ly + 1*S, lw - 4*S, 2*S, 0.5*S); ctx.fill();
-      };
-
-      // ── Keyboard ──
-      const drawKeyboard = (kx: number, ky: number, kw: number, accent: string) => {
-        ctx.fillStyle = "#1e293b";
-        ctx.beginPath(); ctx.roundRect(kx, ky, kw, 5*S, 1*S); ctx.fill();
-        ctx.strokeStyle = accent + "44"; ctx.lineWidth = 0.5;
-        for (let ki = 0; ki < 4; ki++) {
-          ctx.beginPath();
-          ctx.moveTo(kx + 2*S, ky + 1.2*S * ki + 0.8*S);
-          ctx.lineTo(kx + kw - 2*S, ky + 1.2*S * ki + 0.8*S);
-          ctx.stroke();
-        }
-      };
-
-      // ── Mouse ──
-      const drawMouse = (ox: number, oy: number, accent: string) => {
-        ctx.fillStyle = "#1e293b";
-        ctx.beginPath(); ctx.ellipse(ox, oy, 3*S, 4.5*S, 0, 0, Math.PI*2); ctx.fill();
-        ctx.strokeStyle = accent + "66"; ctx.lineWidth = 0.5;
-        ctx.beginPath(); ctx.moveTo(ox, oy - 4.5*S); ctx.lineTo(ox, oy + 1*S); ctx.stroke();
-      };
-
-      // ── Coffee cup ──
-      const drawCoffee = (ox: number, oy: number) => {
-        ctx.fillStyle = "#78350f";
-        ctx.fillRect(ox - 3*S, oy - 5*S, 6*S, 6*S);
-        ctx.strokeStyle = "#92400e"; ctx.lineWidth = 0.5;
-        ctx.strokeRect(ox - 3*S, oy - 5*S, 6*S, 6*S);
-        ctx.fillStyle = "#451a03";
-        ctx.beginPath(); ctx.ellipse(ox, oy - 5*S, 3*S, 1.5*S, 0, 0, Math.PI*2); ctx.fill();
-        // handle
-        ctx.strokeStyle = "#92400e"; ctx.lineWidth = 1;
-        ctx.beginPath(); ctx.arc(ox + 3.5*S, oy - 2*S, 2*S, -0.5, 0.5); ctx.stroke();
-      };
-
-      // ════════════════════════════════
-      // ตำแหน่งโต๊ะกลางห้อง (room-relative coords)
-      // ════════════════════════════════
-      const deskBX = cx - 18*S; // base X of desk front-left corner
-      const deskBY = cy + 12*S; // base Y
-      const deskW  = 50*S;
-
-      // วาดโต๊ะทุกห้อง (glass desk with neon accent)
-      drawDesk(deskBX, deskBY, deskW, 20*S, "rgba(15,23,42,0.92)", r.border);
-
-      // Keyboard + mouse on desk top
-      const kbX = deskBX + 5*S;
-      const kbY = deskBY - 3.5*S;
-      drawKeyboard(kbX, kbY, 22*S, r.labelColor);
-      drawMouse(deskBX + 32*S, deskBY - 2*S, r.labelColor);
-
-      // ════════════════════════════════
-      // เฮดเอร์เฉพาะตามแผนก
-      // ════════════════════════════════
-      if (r.id === "ceo") {
-        // CEO: จอคู่ + MacBook (premium setup)
-        // จอใหญ่ซ้าย
-        drawMonitor(cx - 28*S, cy - 14*S, 20*S, 13*S, "#0d1b2a", () => {
-          // dashboard
-          ctx.fillStyle = "#60a5fa22";
-          ctx.fillRect(cx - 28*S + 1*S, cy - 14*S + 1*S, 18*S, 11*S);
-          ctx.fillStyle = "#60a5fa"; ctx.font = `bold ${Math.round(4*S)}px monospace`;
-          ctx.fillText("CEO DASH", cx - 27*S, cy - 8*S);
-          for (let b = 0; b < 3; b++) {
-            ctx.fillStyle = ["#10b981","#f59e0b","#ef4444"][b];
-            ctx.fillRect(cx - 27*S + b*6*S, cy - 6*S, 5*S, 3*S);
-          }
-        });
-        // จอเล็กขวาย
-        drawMonitor(cx - 6*S, cy - 11*S, 14*S, 9*S, "#080c1a", () => {
-          ctx.fillStyle = "#fbbf24"; ctx.font = `bold ${Math.round(3.5*S)}px monospace`;
-          ctx.fillText("XAUUSD", cx - 5*S, cy - 6*S);
-          ctx.fillStyle = "#10b981"; ctx.fillText("+2.4%", cx - 5*S, cy - 3*S);
-        });
-        drawMacBook(cx + 10*S, cy + 4*S, 18*S, "#60a5fa");
-        drawPlant(cx - sizeX + 25*S, cy + 5*S);
-        drawCoffee(cx + 6*S, deskBY - 4*S);
-        // ถ้วยรางวัลทอง
-        ctx.fillStyle = "#fbbf24";
-        ctx.beginPath(); ctx.arc(cx - sizeX + 38*S, cy + 10*S, 3*S, 0, Math.PI*2); ctx.fill();
-        ctx.fillRect(cx - sizeX + 37*S, cy + 13*S, 2*S, 5*S);
-        ctx.fillRect(cx - sizeX + 34*S, cy + 18*S, 8*S, 2*S);
-
-      } else if (r.id === "chart") {
-        // Chart AI: สามจอเรียงกันแสดงกราฟ
-        const fc = frameCountRef.current;
-        drawMonitor(cx - 30*S, cy - 15*S, 18*S, 12*S, "#031a0a", () => {
-          // candlesticks
-          const candles = [6,3,8,5,7,4,9,2,7,5];
-          candles.forEach((h, i) => {
-            const up = i % 2 === 0;
-            ctx.fillStyle = up ? "#10b981" : "#ef4444";
-            ctx.fillRect(cx - 29*S + i*1.8*S, cy - 7*S - h*0.8*S, 1.2*S, h*0.8*S);
-          });
-        });
-        drawMonitor(cx - 10*S, cy - 12*S, 18*S, 12*S, "#031a0a", () => {
-          // RSI line
-          ctx.strokeStyle = "#f59e0b"; ctx.lineWidth = 1;
-          ctx.beginPath();
-          [40,55,48,62,50,58,45,67,52,60].forEach((v, i) => {
-            const px2 = cx - 9*S + i*1.7*S;
-            const py2 = cy - 6*S - (v - 40)*0.08*S;
-            i === 0 ? ctx.moveTo(px2, py2) : ctx.lineTo(px2, py2);
-          });
-          ctx.stroke();
-        });
-        drawMonitor(cx + 10*S, cy - 9*S, 14*S, 9*S, "#02050f", () => {
-          ctx.fillStyle = "#a78bfa"; ctx.font = `bold ${Math.round(3*S)}px monospace`;
-          ctx.fillText("LIVE FEED", cx + 11*S, cy - 5*S);
-          ctx.fillStyle = `rgba(167,139,250,${0.4 + Math.sin(fc*0.1)*0.3})`;
-          ctx.fillText("BTC " + (44000 + Math.round(Math.sin(fc*0.05)*200)), cx + 11*S, cy - 2*S);
-        });
-        drawKeyboard(deskBX + 2*S, deskBY - 4*S, 28*S, r.labelColor);
-
-      } else if (r.id === "ea") {
-        // EA Bot: จอคู่ + ตู้เซิร์วเดอร์
-        drawMonitor(cx - 26*S, cy - 13*S, 18*S, 12*S, "#020817", () => {
-          ctx.fillStyle = "#818cf8"; ctx.font = `bold ${Math.round(3.5*S)}px monospace`;
-          const status = ["SCANNING","EXECUTE","WAITING"][(Math.floor(frameCountRef.current/30))%3];
-          ctx.fillText(status, cx - 25*S, cy - 7*S);
-          ctx.fillStyle = `rgba(99,102,241,${0.5+Math.sin(frameCountRef.current*0.15)*0.4})`;
-          ctx.fillRect(cx - 25*S, cy - 5*S, 16*S, 2*S);
-        });
-        drawMonitor(cx - 6*S, cy - 10*S, 14*S, 9*S, "#020817", () => {
-          ctx.fillStyle = "#10b981"; ctx.font = `${Math.round(3*S)}px monospace`;
-          ["LOT: 0.1","SL: 15","TP: 30"].forEach((t, i) => ctx.fillText(t, cx - 5*S, cy - 7*S + i*3*S));
-        });
-        // ตู้เซิร์วเดอร์
-        const sx = cx + 12*S; const sy2 = cy - 14*S;
-        ctx.fillStyle = "#0a0f1a";
-        ctx.fillRect(sx, sy2, 14*S, 28*S);
-        ctx.strokeStyle = "#3b82f6"; ctx.lineWidth = 0.8;
-        ctx.strokeRect(sx, sy2, 14*S, 28*S);
-        for (let li = 0; li < 6; li++) {
-          const on = (frameCountRef.current + li*3) % 18 > 9;
-          ctx.fillStyle = on ? "#10b981" : "#064e3b";
-          ctx.beginPath(); ctx.arc(sx+4*S, sy2+4*S+li*4*S, 1.5*S, 0, Math.PI*2); ctx.fill();
-          ctx.fillStyle = (frameCountRef.current + li*5) % 14 > 7 ? "#3b82f6" : "#1e3a5f";
-          ctx.beginPath(); ctx.arc(sx+9*S, sy2+4*S+li*4*S, 1.5*S, 0, Math.PI*2); ctx.fill();
-        }
-
-      } else if (r.id === "risk") {
-        // Risk AI: จอแสดงการเตือนภัย
-        const riskPulse = Math.sin(frameCountRef.current * 0.15) > 0;
-        drawMonitor(cx - 28*S, cy - 14*S, 20*S, 13*S, riskPulse ? "#200808" : "#0d0505", () => {
-          ctx.fillStyle = riskPulse ? "#ef4444" : "#7f1d1d";
-          ctx.font = `bold ${Math.round(4*S)}px monospace`;
-          ctx.fillText("RISK ALERT", cx - 27*S, cy - 9*S);
-          ctx.fillStyle = "#fca5a5"; ctx.font = `${Math.round(3*S)}px monospace`;
-          ["SPREAD: 3.2","LOSS: -$120","LIMIT: 2%"].forEach((t,i)=>ctx.fillText(t, cx-27*S, cy-6*S+i*3*S));
-        });
-        drawMonitor(cx - 5*S, cy - 11*S, 14*S, 9*S, "#0d0505", () => {
-          ctx.fillStyle = riskPulse ? "#ef4444" : "#991b1b";
-          ctx.beginPath(); ctx.arc(cx+2*S, cy-7*S, 4*S, 0, Math.PI*2); ctx.fill();
-          ctx.fillStyle = "#fff"; ctx.font = `bold ${Math.round(3*S)}px monospace`;
-          ctx.fillText("!", cx+1*S, cy-5.5*S);
-        });
-        // siren
-        ctx.fillStyle = riskPulse ? "#ef4444" : "#7f1d1d";
-        ctx.beginPath(); ctx.arc(cx + sizeX - 18*S, cy - sizeY/2, 5*S, 0, Math.PI*2); ctx.fill();
-        ctx.fillStyle = riskPulse ? "rgba(239,68,68,0.3)" : "transparent";
-        ctx.beginPath(); ctx.arc(cx + sizeX - 18*S, cy - sizeY/2, 10*S, 0, Math.PI*2); ctx.fill();
-
-      } else if (r.id === "finance") {
-        // Finance AI: จอคู่ + ตู้นิรภัย
-        drawMonitor(cx - 28*S, cy - 14*S, 20*S, 13*S, "#011a1a", () => {
-          ctx.fillStyle = "#22d3ee"; ctx.font = `bold ${Math.round(4*S)}px monospace`;
-          ctx.fillText("ERP LEDGER", cx - 27*S, cy - 9*S);
-          ctx.fillStyle = "#67e8f9"; ctx.font = `${Math.round(3*S)}px monospace`;
-          ["REV: +$2340","EXP: -$440","NET: $1900"].forEach((t,i)=>ctx.fillText(t, cx-27*S, cy-6*S+i*3*S));
-        });
-        drawMonitor(cx - 6*S, cy - 11*S, 14*S, 9*S, "#011a1a", () => {
-          // bar chart
-          [4,7,5,9,6,8].forEach((h,i) => {
-            ctx.fillStyle = "#06b6d4";
-            ctx.fillRect(cx-4*S+i*2.2*S, cy-4*S-h*0.8*S, 1.5*S, h*0.8*S);
-          });
-        });
-        // ตู้นิรภัย
-        const sfx = cx - sizeX + 28*S; const sfy = cy - 8*S;
-        ctx.fillStyle = "#1e293b";
-        ctx.fillRect(sfx, sfy, 14*S, 18*S);
-        ctx.strokeStyle = "#06b6d4"; ctx.lineWidth = 1;
-        ctx.strokeRect(sfx, sfy, 14*S, 18*S);
-        ctx.beginPath(); ctx.arc(sfx+7*S, sfy+9*S, 3*S, 0, Math.PI*2); ctx.stroke();
-        ctx.fillStyle = "#06b6d4";
-        ctx.beginPath(); ctx.arc(sfx+7*S, sfy+9*S, 1.5*S, 0, Math.PI*2); ctx.fill();
-
-      } else if (r.id === "strategy") {
-        // Strategy AI: จอ + Whiteboard
-        drawMonitor(cx - 26*S, cy - 13*S, 18*S, 12*S, "#0f0e00", () => {
-          ctx.fillStyle = "#fbbf24"; ctx.font = `bold ${Math.round(4*S)}px monospace`;
-          ctx.fillText("STRATEGY", cx - 25*S, cy - 8*S);
-          ctx.strokeStyle = "#f59e0b"; ctx.lineWidth = 1;
-          ctx.beginPath();
-          [30,60,45,75,55,80,65].forEach((v,i) => {
-            const px2 = cx - 25*S + i*2.4*S;
-            const py2 = cy - 6*S - (v-30)*0.06*S;
-            i===0?ctx.moveTo(px2,py2):ctx.lineTo(px2,py2);
-          }); ctx.stroke();
-        });
-        drawMacBook(cx - 5*S, cy + 5*S, 18*S, "#fbbf24");
-        // Whiteboard
-        const wx = cx - sizeX + 15*S, wy2 = cy - sizeY/2 - 5*S;
-        ctx.fillStyle = "#f1f5f9";
-        ctx.fillRect(wx, wy2, 22*S, 16*S);
-        ctx.strokeStyle = "#cbd5e1"; ctx.lineWidth = 1;
-        ctx.strokeRect(wx, wy2, 22*S, 16*S);
-        ctx.strokeStyle = "#3b82f6"; ctx.lineWidth = 0.8;
-        ctx.beginPath();
-        ctx.moveTo(wx+2*S, wy2+12*S); ctx.lineTo(wx+8*S, wy2+5*S);
-        ctx.lineTo(wx+14*S, wy2+9*S); ctx.lineTo(wx+20*S, wy2+3*S);
-        ctx.stroke();
-        ctx.strokeStyle = "#ef4444";
-        ctx.beginPath(); ctx.moveTo(wx+2*S, wy2+14*S); ctx.lineTo(wx+20*S, wy2+14*S); ctx.stroke();
-
-      } else if (r.id === "audit") {
-        // Audit AI: จอ + เอกสารกอง อุปกรณ์ตรวจสอบ
-        drawMonitor(cx - 26*S, cy - 13*S, 18*S, 12*S, "#070516", () => {
-          ctx.fillStyle = "#a78bfa"; ctx.font = `bold ${Math.round(3.5*S)}px monospace`;
-          ctx.fillText("AUDIT LOG", cx - 25*S, cy - 9*S);
-          ctx.fillStyle = "#c4b5fd"; ctx.font = `${Math.round(2.8*S)}px monospace`;
-          ["✓ Trade #1042","✓ PnL Match","⚠ Spread +0.2"].forEach((t,i)=>ctx.fillText(t, cx-25*S, cy-6.5*S+i*3*S));
-        });
-        drawMonitor(cx - 6*S, cy - 10*S, 14*S, 9*S, "#070516", () => {
-          // checklist bars
-          [0.9,0.75,0.6,1.0].forEach((v,i)=>{
-            ctx.fillStyle = "#7c3aed22";
-            ctx.fillRect(cx-5*S, cy-8*S+i*2.2*S, 12*S, 1.5*S);
-            ctx.fillStyle = v===1.0?"#10b981":v>0.8?"#a78bfa":"#f59e0b";
-            ctx.fillRect(cx-5*S, cy-8*S+i*2.2*S, 12*S*v, 1.5*S);
-          });
-        });
-        drawPlant(cx + sizeX - 25*S, cy + 5*S);
-
-      } else if (r.id === "alert") {
-        // Alert AI: จอแจ้งเตือน + MacBook
-        const alertOn = Math.sin(frameCountRef.current * 0.12) > 0.3;
-        drawMonitor(cx - 26*S, cy - 13*S, 18*S, 12*S, alertOn ? "#1a0d00" : "#0c0600", () => {
-          ctx.fillStyle = alertOn ? "#f97316" : "#7c2d12";
-          ctx.font = `bold ${Math.round(4*S)}px monospace`;
-          ctx.fillText(alertOn ? "🔔 ALERT!" : "MONITOR", cx - 25*S, cy - 8*S);
-          ctx.fillStyle = "#fed7aa"; ctx.font = `${Math.round(3*S)}px monospace`;
-          ["PORT ALERT","SPREAD: 2.8","RISK: HIGH"].forEach((t,i)=>ctx.fillText(t,cx-25*S,cy-6*S+i*3*S));
-        });
-        drawMacBook(cx - 5*S, cy + 5*S, 16*S, "#f97316");
-        drawCoffee(cx + 14*S, deskBY - 4*S);
-
-      } else if (r.id === "report") {
-        // Report AI: จอ + เอกสารรายงาน
-        drawMonitor(cx - 26*S, cy - 13*S, 18*S, 12*S, "#0a0316", () => {
-          ctx.fillStyle = "#c084fc"; ctx.font = `bold ${Math.round(3.5*S)}px monospace`;
-          ctx.fillText("REPORT GEN", cx - 25*S, cy - 9*S);
-          ctx.fillStyle = "#e9d5ff"; ctx.font = `${Math.round(2.8*S)}px monospace`;
-          ["Daily PnL...","Risk Sum...","Tax Calc..."].forEach((t,i)=>ctx.fillText(t,cx-25*S,cy-6.5*S+i*3*S));
-        });
-        drawMacBook(cx - 5*S, cy + 5*S, 18*S, "#c084fc");
-        // เอกสารกองบนโต๊ะ (paper stack)
-        for (let pi = 0; pi < 3; pi++) {
-          ctx.fillStyle = `rgba(241,245,249,${0.8-pi*0.2})`;
-          ctx.fillRect(cx + 10*S + pi*1.5*S, deskBY - 5*S - pi*1.5*S, 10*S, 7*S);
-          ctx.strokeStyle = "#94a3b8"; ctx.lineWidth = 0.5;
-          ctx.strokeRect(cx + 10*S + pi*1.5*S, deskBY - 5*S - pi*1.5*S, 10*S, 7*S);
-        }
-        drawPlant(cx - sizeX + 25*S, cy + 5*S);
-      }
-
+      ctx.shadowBlur = 0;
     };
 
     const drawRoomNameplate = (r: RoomDef) => {
@@ -1272,321 +958,129 @@ export default function Dashboard() {
       if (!pos) return;
       const { cx, cy } = pos;
 
-      // Unified Room Nameplate Badge (Department Role, Agent Name & Live Status)
-      const labelText = `${r.emoji} ${r.role} • ${r.name}`;
-      const labelFontSize = Math.max(12, Math.round(15 * scaleMultiplier));
-      ctx.font = `bold ${labelFontSize}px "Manrope", "Inter", "Segoe UI", sans-serif`;
-      
-      const labelTextWidth = ctx.measureText(labelText).width;
-      
-      // Layout dimensions
-      const dotRadius = Math.max(3.5, 4.5 * scaleMultiplier);
-      const dotSpacing = 8 * scaleMultiplier;
-      const paddingX = 14 * scaleMultiplier;
-      
-      const badgeW = labelTextWidth + paddingX * 2 + dotRadius * 2 + dotSpacing;
-      const badgeH = Math.max(22, Math.round(28 * scaleMultiplier));
-      const badgeX = cx - badgeW / 2;
-      let badgeY = cy + sizeY - badgeH / 2 + 2 * scaleMultiplier;
+      const S = scaleMultiplier;
+      const titleFont = `bold ${Math.max(11, Math.round(13 * S))}px "Manrope", sans-serif`;
+      const subtitleFont = `${Math.max(9, Math.round(10.5 * S))}px "Manrope", sans-serif`;
 
-      // Constrain Y position so it doesn't get covered by the Risk Gate panel at the bottom of the screen
+      ctx.font = titleFont;
+      const titleText = `${r.emoji} ${r.name}`;
+      const titleWidth = ctx.measureText(titleText).width;
+
+      ctx.font = subtitleFont;
+      const subtitleText = r.role;
+      const subtitleWidth = ctx.measureText(subtitleText).width;
+
+      const paddingX = 14 * S;
+      const dotRadius = Math.max(3.5, 4.5 * S);
+      const dotSpacing = 8 * S;
+
+      const contentWidth = Math.max(titleWidth + dotSpacing + dotRadius * 2, subtitleWidth);
+      const badgeW = contentWidth + paddingX * 2;
+      const badgeH = Math.max(38, Math.round(44 * S));
+
+      const badgeX = cx - badgeW / 2;
+      let badgeY = cy + sizeY - badgeH / 2 + 4 * S;
+
       const maxBadgeBottom = H - 64;
       if (badgeY + badgeH > maxBadgeBottom) {
         badgeY = maxBadgeBottom - badgeH;
       }
 
-      // Draw glowing nameplate background
       ctx.save();
-      ctx.fillStyle = "rgba(7, 10, 15, 0.95)";
+      ctx.fillStyle = "rgba(7, 10, 15, 0.96)";
       ctx.strokeStyle = r.border;
       ctx.lineWidth = 1.8;
       ctx.shadowColor = r.border;
       ctx.shadowBlur = 8;
-      roundRect(ctx, badgeX, badgeY, badgeW, badgeH, Math.max(4, 6 * scaleMultiplier));
+      roundRect(ctx, badgeX, badgeY, badgeW, badgeH, Math.max(4, 6 * S));
       ctx.fill();
       ctx.stroke();
-      ctx.restore(); // Reset shadow and other styles
+      ctx.restore();
 
-      // Draw Live Status Dot inside the badge
-      const statusColors = { online: "#10b981", busy: "#f59e0b", idle: "#64748b" };
-      const dotX = badgeX + paddingX + dotRadius;
-      const dotY = badgeY + badgeH / 2;
+      ctx.save();
+      ctx.textBaseline = "middle";
+      ctx.textAlign = "left";
+
+      const titleGroupW = titleWidth + dotSpacing + dotRadius * 2;
+      const titleStartX = badgeX + (badgeW - titleGroupW) / 2;
+      const firstLineY = badgeY + badgeH * 0.35;
+
+      ctx.font = titleFont;
+      ctx.fillStyle = "#ffffff";
+      ctx.fillText(titleText, titleStartX, firstLineY);
+
+      const dotX = titleStartX + titleWidth + dotSpacing + dotRadius;
+      const dotY = firstLineY;
       
-      ctx.fillStyle = statusColors[r.status];
+      const getStatusColor = (roomId: string, status: string) => {
+        if (roomId === "ea") return "#818cf8"; // Purple for EA Bot
+        if (roomId === "risk") return "#ef4444"; // Red for Risk AI
+        if (roomId === "strategy" || roomId === "alert") return "#fbbf24"; // Orange/Yellow
+        return "#10b981"; // Green for others
+      };
+      const dotColor = getStatusColor(r.id, r.status);
+
+      ctx.fillStyle = dotColor;
       ctx.beginPath();
       ctx.arc(dotX, dotY, dotRadius, 0, Math.PI * 2);
       ctx.fill();
 
       // Pulsing status ring
       if (r.status !== "idle") {
-        ctx.fillStyle = statusColors[r.status] + "22";
+        ctx.fillStyle = dotColor + "22";
         ctx.beginPath();
-        ctx.arc(dotX, dotY, dotRadius * 2 + Math.sin(frameCountRef.current * 0.12) * 1.5 * scaleMultiplier, 0, Math.PI * 2);
+        ctx.arc(dotX, dotY, dotRadius * 2 + Math.sin(frameCountRef.current * 0.12) * 1.5 * S, 0, Math.PI * 2);
         ctx.fill();
       }
 
-      // Draw Badge Text (Emoji, Role, Name)
-      ctx.fillStyle = "#ffffff";
-      ctx.textAlign = "left";
-      ctx.textBaseline = "middle";
-      ctx.font = `bold ${labelFontSize}px "Manrope", "Inter", "Segoe UI", sans-serif`;
-      ctx.fillText(labelText, dotX + dotRadius + dotSpacing, badgeY + badgeH / 2 + 0.5);
-
-      // Reset text alignment to defaults
-      ctx.textAlign = "left";
-      ctx.textBaseline = "alphabetic";
-    };
-
-    const drawDebateConnections = () => {
-      const ceoCenter = centers["ceo"];
-      if (!ceoCenter) return;
-
-      const targetRoomIds = ["chart", "audit", "ea", "finance", "strategy", "risk"];
-      
-      targetRoomIds.forEach((ti, idx) => {
-        const dest = centers[ti];
-        if (!dest) return;
-
-        ctx.strokeStyle = "rgba(6, 182, 212, 0.4)"; // Bright Neon
-        ctx.lineWidth = 1.5;
-        ctx.setLineDash([5, 10]);
-        
-        ctx.beginPath();
-        ctx.moveTo(ceoCenter.cx, ceoCenter.cy);
-        ctx.lineTo(dest.cx, dest.cy);
-        ctx.stroke();
-        
-        ctx.setLineDash([]); 
-
-        // Glowing Event Flow Animation
-        const speedMultiplier = 0.012;
-        const progress = ((frameCountRef.current * speedMultiplier) + idx * 0.15) % 1;
-        const px = ceoCenter.cx + (dest.cx - ceoCenter.cx) * progress;
-        const py = ceoCenter.cy + (dest.cy - ceoCenter.cy) * progress;
-        
-        // Glowing dot
-        ctx.shadowColor = "#22d3ee";
-        ctx.shadowBlur = 10;
-        ctx.fillStyle = "#22d3ee";
-        ctx.beginPath();
-        ctx.arc(px, py, 3.5, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.shadowBlur = 0;
-      });
-    };
-
-    const drawCharacter = (cx: number, cy: number, color: string, facing: string, frame: number, speaking: boolean) => {
-      ctx.save();
-      const s = 2.4; 
-
-      ctx.fillStyle = "rgba(0,0,0,0.28)";
-      ctx.beginPath();
-      ctx.ellipse(cx + 4.5 * s, cy + 14 * s, 5.5 * s, 2 * s, 0, 0, Math.PI * 2);
-      ctx.fill();
-
-      const walkCycle = Math.sin(frame * 0.18);
-      const legL = walkCycle > 0 ? 1.8 : 0;
-      const legR = walkCycle <= 0 ? 1.8 : 0;
-
-      ctx.fillStyle = "#1e293b"; 
-      ctx.fillRect(cx + 2.5 * s, cy + 8.5 * s, 1.5 * s, 4.5 * s + legL);
-      ctx.fillRect(cx + 5 * s, cy + 8.5 * s, 1.5 * s, 4.5 * s + legR);
-
-      ctx.fillStyle = "#0c0a0f";
-      ctx.fillRect(cx + 2 * s, cy + 13 * s + legL, 2.2 * s, 1.2 * s);
-      ctx.fillRect(cx + 5 * s, cy + 13 * s + legR, 2.2 * s, 1.2 * s);
-
-      // เสื้อสูทพนักงานออฟฟิศ
-      ctx.fillStyle = color; 
-      ctx.fillRect(cx + 2 * s, cy + 3.8 * s, 5.2 * s, 5.2 * s);
-
-      // คอเสื้อเชิ้ตเชือกขาว
-      ctx.fillStyle = "#ffffff";
-      ctx.fillRect(cx + 3.6 * s, cy + 3.8 * s, 2 * s, 2.2 * s);
-
-      // เนคไทสีแดง
-      ctx.fillStyle = "#b91c1c";
-      ctx.fillRect(cx + 4.2 * s, cy + 4.4 * s, 0.8 * s, 2.6 * s);
-
-      // ใบหน้า
-      ctx.fillStyle = "#f5d0b4"; 
-      ctx.fillRect(cx + 1.5 * s, cy + 0.2 * s, 6.2 * s, 3.8 * s);
-
-      // ผมสุภาพน้ำตาลออฟฟิศ
-      ctx.fillStyle = "#271b12";
-      ctx.fillRect(cx + 1.5 * s, cy - 0.6 * s, 6.2 * s, 1.2 * s); 
-      ctx.fillRect(cx + 1.5 * s, cy + 0.2 * s, 1 * s, 2 * s);     
-      ctx.fillRect(cx + 6.7 * s, cy + 0.2 * s, 1 * s, 2 * s);     
-
-      const eyeY = cy + 1.2 * s;
-      ctx.fillStyle = "#000000";
-      if (facing === "right") {
-        ctx.fillRect(cx + 5.5 * s, eyeY, 1 * s, 1 * s);
-      } else if (facing === "left") {
-        ctx.fillRect(cx + 2.5 * s, eyeY, 1 * s, 1 * s);
-      } else {
-        ctx.fillRect(cx + 2.5 * s, eyeY, 1 * s, 1 * s);
-        ctx.fillRect(cx + 5.5 * s, eyeY, 1 * s, 1 * s);
-      }
-
-      if (speaking && Math.sin(frame * 0.45) > 0) {
-        ctx.fillStyle = "#9a3412";
-        ctx.fillRect(cx + 3.6 * s, cy + 2.8 * s, 2 * s, 0.8 * s);
-      }
-
-      const armSwing = walkCycle * 1.5;
-      ctx.fillStyle = color; 
-      ctx.fillRect(cx + 0.5 * s, cy + 3.8 * s + (facing === "left" ? armSwing : 0), 1.5 * s, 4 * s);
-      ctx.fillRect(cx + 7.2 * s, cy + 3.8 * s + (facing === "right" ? armSwing : 0), 1.5 * s, 4 * s);
-
-      ctx.fillStyle = "#f5d0b4"; 
-      ctx.fillRect(cx + 0.5 * s, cy + 7.4 * s + (facing === "left" ? armSwing : 0), 1.5 * s, 1 * s);
-      ctx.fillRect(cx + 7.2 * s, cy + 7.4 * s + (facing === "right" ? armSwing : 0), 1.5 * s, 1 * s);
-
-      ctx.restore();
-    };
-
-    const drawBubble = (a: any) => {
-      if (a.bubbleTimer <= 0 || !a.bubble) return;
-      const alpha = Math.min(1.0, a.bubbleTimer / 20);
-      ctx.save();
-      ctx.globalAlpha = alpha;
-
-      const text = a.bubble;
-      const bubbleFontSize = Math.max(13, Math.round(16 * scaleMultiplier));
-      ctx.font = `bold ${bubbleFontSize}px "Manrope", "Inter", "Segoe UI", sans-serif`;
-      
-      const tw = ctx.measureText(text).width + 16 * scaleMultiplier;
-      const th = Math.max(24, 28 * scaleMultiplier);
-      
-      let bx = a.sx - tw / 2 + 4 * scaleMultiplier;
-      let by = a.sy - 12 - th;
-      let arrowDirection = "down"; // where the arrow points (relative to the bubble)
-      
-      // Customize positions for each room to prevent overlap in the center
-      const sidePadding = 15 * scaleMultiplier;
-      const thHalf = th / 2;
-      
-      if (a.id === "report" || a.id === "finance" || a.id === "strategy") {
-        // Left side rooms -> Bubble to the left
-        bx = a.sx - tw - sidePadding;
-        by = a.sy - thHalf;
-        arrowDirection = "right";
-      } else if (a.id === "ceo" || a.id === "chart" || a.id === "risk") {
-        // Right side rooms -> Bubble to the right
-        bx = a.sx + sidePadding + 8 * scaleMultiplier;
-        by = a.sy - thHalf;
-        arrowDirection = "left";
-      } else if (a.id === "audit") {
-        // Top-center -> Bubble slightly to the left and up
-        bx = a.sx - tw - 5 * scaleMultiplier;
-        by = a.sy - th - 5 * scaleMultiplier;
-        arrowDirection = "bottom-right";
-      } else if (a.id === "alert") {
-        // Bottom-center -> Bubble to the left and down
-        bx = a.sx - tw - 5 * scaleMultiplier;
-        by = a.sy + 5 * scaleMultiplier;
-        arrowDirection = "top-right";
-      } else if (a.id === "ea") {
-        // Center room -> Bubble above
-        bx = a.sx - tw / 2;
-        by = a.sy - 16 * scaleMultiplier - th;
-        arrowDirection = "down";
-      }
-
-      ctx.fillStyle = "#070a0f";
-      ctx.strokeStyle = "#06b6d4";
-      ctx.lineWidth = 1.5;
-      roundRect(ctx, bx, by, tw, th, Math.max(3, 4 * scaleMultiplier));
-      ctx.fill(); ctx.stroke();
-
-      ctx.fillStyle = "#070a0f";
-      ctx.strokeStyle = "#06b6d4";
-      
-      if (arrowDirection === "down") {
-        ctx.beginPath();
-        ctx.moveTo(a.sx + 2 * scaleMultiplier, by + th);
-        ctx.lineTo(a.sx + 4 * scaleMultiplier, by + th + 6 * scaleMultiplier);
-        ctx.lineTo(a.sx + 8 * scaleMultiplier, by + th);
-        ctx.closePath();
-        ctx.fill();
-        
-        ctx.beginPath();
-        ctx.moveTo(a.sx + 3 * scaleMultiplier, by + th);
-        ctx.lineTo(a.sx + 4 * scaleMultiplier, by + th + 6 * scaleMultiplier);
-        ctx.lineTo(a.sx + 7 * scaleMultiplier, by + th);
-        ctx.stroke();
-      } else if (arrowDirection === "left") {
-        ctx.beginPath();
-        ctx.moveTo(bx, by + thHalf - 4 * scaleMultiplier);
-        ctx.lineTo(bx - 6 * scaleMultiplier, by + thHalf);
-        ctx.lineTo(bx, by + thHalf + 4 * scaleMultiplier);
-        ctx.closePath();
-        ctx.fill();
-        
-        ctx.beginPath();
-        ctx.moveTo(bx, by + thHalf - 3 * scaleMultiplier);
-        ctx.lineTo(bx - 6 * scaleMultiplier, by + thHalf);
-        ctx.lineTo(bx, by + thHalf + 3 * scaleMultiplier);
-        ctx.stroke();
-      } else if (arrowDirection === "right") {
-        ctx.beginPath();
-        ctx.moveTo(bx + tw, by + thHalf - 4 * scaleMultiplier);
-        ctx.lineTo(bx + tw + 6 * scaleMultiplier, by + thHalf);
-        ctx.lineTo(bx + tw, by + thHalf + 4 * scaleMultiplier);
-        ctx.closePath();
-        ctx.fill();
-        
-        ctx.beginPath();
-        ctx.moveTo(bx + tw, by + thHalf - 3 * scaleMultiplier);
-        ctx.lineTo(bx + tw + 6 * scaleMultiplier, by + thHalf);
-        ctx.lineTo(bx + tw, by + thHalf + 3 * scaleMultiplier);
-        ctx.stroke();
-      } else if (arrowDirection === "bottom-right") {
-        ctx.beginPath();
-        ctx.moveTo(bx + tw - 8 * scaleMultiplier, by + th);
-        ctx.lineTo(bx + tw, by + th + 6 * scaleMultiplier);
-        ctx.lineTo(bx + tw - 2 * scaleMultiplier, by + th);
-        ctx.closePath();
-        ctx.fill();
-        
-        ctx.beginPath();
-        ctx.moveTo(bx + tw - 7 * scaleMultiplier, by + th);
-        ctx.lineTo(bx + tw, by + th + 6 * scaleMultiplier);
-        ctx.lineTo(bx + tw - 3 * scaleMultiplier, by + th);
-        ctx.stroke();
-      } else if (arrowDirection === "top-right") {
-        ctx.beginPath();
-        ctx.moveTo(bx + tw - 8 * scaleMultiplier, by);
-        ctx.lineTo(bx + tw, by - 6 * scaleMultiplier);
-        ctx.lineTo(bx + tw - 2 * scaleMultiplier, by);
-        ctx.closePath();
-        ctx.fill();
-        
-        ctx.beginPath();
-        ctx.moveTo(bx + tw - 7 * scaleMultiplier, by);
-        ctx.lineTo(bx + tw, by - 6 * scaleMultiplier);
-        ctx.lineTo(bx + tw - 3 * scaleMultiplier, by);
-        ctx.stroke();
-      }
-
-      ctx.fillStyle = "#f8fafc";
+      const secondLineY = badgeY + badgeH * 0.72;
       ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText(text, bx + tw / 2, by + th / 2 + 0.5);
+      ctx.font = subtitleFont;
+      ctx.fillStyle = r.labelColor;
+      ctx.fillText(subtitleText, cx, secondLineY);
 
-      // คืนค่าตั้งต้นสำหรับ Text Alignment ของ canvas
-      ctx.textAlign = "left";
-      ctx.textBaseline = "alphabetic";
       ctx.restore();
+    };
+
+    const drawNetworkConnections = () => {
+      CONNECTIONS.forEach((conn, idx) => {
+        const p1 = centers[conn.from];
+        const p2 = centers[conn.to];
+        if (!p1 || !p2) return;
+
+        // Draw solid connection line
+        ctx.save();
+        ctx.strokeStyle = conn.color + "44"; // Translucent for cyber aesthetic
+        ctx.lineWidth = 1.5;
+        ctx.shadowColor = conn.color;
+        ctx.shadowBlur = 4;
+        ctx.beginPath();
+        ctx.moveTo(p1.cx, p1.cy);
+        ctx.lineTo(p2.cx, p2.cy);
+        ctx.stroke();
+        ctx.restore();
+
+        // Flowing data packet animation
+        const speed = 0.008;
+        const offset = idx * 0.12;
+        const progress = ((frameCountRef.current * speed) + offset) % 1.0;
+        
+        const px = p1.cx + (p2.cx - p1.cx) * progress;
+        const py = p1.cy + (p2.cy - p1.cy) * progress;
+
+        ctx.save();
+        ctx.fillStyle = conn.color;
+        ctx.shadowColor = conn.color;
+        ctx.shadowBlur = 8;
+        ctx.beginPath();
+        ctx.arc(px, py, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      });
     };
 
     const render = () => {
       ctx.clearRect(0, 0, W, H);
-
-      // ══════════════════════════════════════════════════════
-      // 🏢 WORLD-CLASS TECH OFFICE BACKGROUND
-      // ══════════════════════════════════════════════════════
 
       // 1. Dark architectural gradient base
       const bgGrad = ctx.createLinearGradient(0, 0, 0, H);
@@ -1596,71 +1090,29 @@ export default function Dashboard() {
       ctx.fillStyle = bgGrad;
       ctx.fillRect(0, 0, W, H);
 
-      // 2. Subtle perspective floor grid (converging lines)
-      const horizonY = H * 0.28;
-      const vpX = W / 2;
-      ctx.strokeStyle = "rgba(30, 58, 138, 0.12)";
-      ctx.lineWidth = 0.8;
-      for (let i = -16; i <= 16; i++) {
-        const floorX = vpX + i * (W / 16);
-        ctx.beginPath();
-        ctx.moveTo(vpX, horizonY);
-        ctx.lineTo(floorX, H);
-        ctx.stroke();
-      }
-      // horizontal floor lines
-      for (let i = 0; i <= 10; i++) {
-        const t = i / 10;
-        const y = horizonY + (H - horizonY) * t * t;
-        const alpha = 0.05 + t * 0.08;
-        ctx.strokeStyle = `rgba(30, 58, 138, ${alpha})`;
-        ctx.beginPath();
-        ctx.moveTo(0, y);
-        ctx.lineTo(W, y);
-        ctx.stroke();
+      // 2. Subtle isometric grid floor
+      ctx.strokeStyle = "rgba(30, 58, 138, 0.08)";
+      ctx.lineWidth = 0.5;
+      const gridSpacingX = sizeX / 2;
+      
+      if (gridSpacingX > 0 && !isNaN(gridSpacingX) && sizeY > 0 && !isNaN(sizeY)) {
+        // Draw diagonal lines in direction 1 (top-left to bottom-right)
+        for (let offset = -W; offset < W; offset += gridSpacingX) {
+          ctx.beginPath();
+          ctx.moveTo(offset, 0);
+          ctx.lineTo(offset + H * (sizeX / sizeY), H);
+          ctx.stroke();
+        }
+        // Draw diagonal lines in direction 2 (top-right to bottom-left)
+        for (let offset = 0; offset < W + H * (sizeX / sizeY); offset += gridSpacingX) {
+          ctx.beginPath();
+          ctx.moveTo(offset, 0);
+          ctx.lineTo(offset - H * (sizeX / sizeY), H);
+          ctx.stroke();
+        }
       }
 
-      // 3. Ceiling structure (top architectural lines)
-      ctx.strokeStyle = "rgba(51, 65, 85, 0.3)";
-      ctx.lineWidth = 1;
-      // ceiling beams
-      for (let i = 0; i <= 8; i++) {
-        const x = (W / 8) * i;
-        ctx.beginPath();
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, H * 0.12);
-        ctx.stroke();
-      }
-      ctx.beginPath();
-      ctx.moveTo(0, H * 0.12);
-      ctx.lineTo(W, H * 0.12);
-      ctx.stroke();
-
-      // 4. Ceiling recessed lights
-      const lightCount = Math.ceil(W / 120);
-      for (let i = 0; i < lightCount; i++) {
-        const lx = (W / lightCount) * i + W / (lightCount * 2);
-        const ly = H * 0.06;
-        // light cone
-        const coneGrad = ctx.createRadialGradient(lx, ly, 2, lx, ly + 80, 120);
-        coneGrad.addColorStop(0, "rgba(147, 210, 255, 0.18)");
-        coneGrad.addColorStop(0.4, "rgba(96, 165, 250, 0.06)");
-        coneGrad.addColorStop(1, "rgba(0,0,0,0)");
-        ctx.fillStyle = coneGrad;
-        ctx.beginPath();
-        ctx.moveTo(lx, ly);
-        ctx.lineTo(lx - 80, ly + 160);
-        ctx.lineTo(lx + 80, ly + 160);
-        ctx.closePath();
-        ctx.fill();
-        // fixture dot
-        ctx.fillStyle = "rgba(200, 230, 255, 0.7)";
-        ctx.beginPath();
-        ctx.arc(lx, ly, 2.5, 0, Math.PI * 2);
-        ctx.fill();
-      }
-
-      // 5. Large ambient glow in center (halo)
+      // 3. Large ambient glow in center (halo)
       const centerGlow = ctx.createRadialGradient(W/2, H*0.45, 40, W/2, H*0.45, W*0.55);
       centerGlow.addColorStop(0, "rgba(15, 30, 80, 0.35)");
       centerGlow.addColorStop(0.5, "rgba(8, 15, 40, 0.15)");
@@ -1668,143 +1120,17 @@ export default function Dashboard() {
       ctx.fillStyle = centerGlow;
       ctx.fillRect(0, 0, W, H);
 
-      // 6. Fine dot-matrix grid
-      ctx.fillStyle = "rgba(51, 75, 120, 0.18)";
-      const dotSpacing = 32;
-      for (let gx = 0; gx < W; gx += dotSpacing) {
-        for (let gy = 0; gy < H; gy += dotSpacing) {
-          ctx.beginPath();
-          ctx.arc(gx, gy, 0.7, 0, Math.PI * 2);
-          ctx.fill();
-        }
-      }
 
-      // 7. Side wall panels (left and right architectural elements)
-      // Left wall
-      const leftWallGrad = ctx.createLinearGradient(0, 0, W * 0.12, 0);
-      leftWallGrad.addColorStop(0, "rgba(15, 25, 60, 0.25)");
-      leftWallGrad.addColorStop(1, "rgba(0,0,0,0)");
-      ctx.fillStyle = leftWallGrad;
-      ctx.fillRect(0, 0, W * 0.12, H);
-      // Right wall
-      const rightWallGrad = ctx.createLinearGradient(W, 0, W * 0.88, 0);
-      rightWallGrad.addColorStop(0, "rgba(15, 25, 60, 0.25)");
-      rightWallGrad.addColorStop(1, "rgba(0,0,0,0)");
-      ctx.fillStyle = rightWallGrad;
-      ctx.fillRect(W * 0.88, 0, W * 0.12, H);
+      // Draw glowing network lines and packets
+      drawNetworkConnections();
 
-      // 8. Neon accent lines on walls (horizontal strips)
-      ctx.strokeStyle = "rgba(59, 130, 246, 0.15)";
-      ctx.lineWidth = 1;
-      [H * 0.25, H * 0.5, H * 0.75].forEach(y => {
-        ctx.beginPath();
-        ctx.moveTo(0, y);
-        ctx.lineTo(W * 0.06, y);
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.moveTo(W * 0.94, y);
-        ctx.lineTo(W, y);
-        ctx.stroke();
-      });
-
-      // ══════════════════════════════════════════════════════
-      // 9. Cyber circuit lines between departments
-      // ══════════════════════════════════════════════════════
-      ctx.strokeStyle = "rgba(6, 182, 212, 0.1)";
-      ctx.lineWidth = 1.2;
-      const drawCircuitRoute = (fromId: string, toId: string) => {
-        const p1 = centers[fromId];
-        const p2 = centers[toId];
-        if (p1 && p2) {
-          ctx.beginPath();
-          ctx.moveTo(p1.cx, p1.cy);
-          ctx.lineTo(p1.cx, (p1.cy + p2.cy) / 2);
-          ctx.lineTo(p2.cx, (p1.cy + p2.cy) / 2);
-          ctx.lineTo(p2.cx, p2.cy);
-          ctx.stroke();
-        }
-      };
-      drawCircuitRoute("strategy", "risk");
-      drawCircuitRoute("risk", "ea");
-      drawCircuitRoute("ceo", "chart");
-      drawCircuitRoute("chart", "finance");
-      drawCircuitRoute("report", "audit");
-      drawCircuitRoute("audit", "ceo");
-
-      // 10. Draw ambient room spotlights
-      ROOMS_CONFIG.forEach((r) => {
-        const pos = centers[r.id];
-        if (!pos) return;
-        const grad = ctx.createRadialGradient(pos.cx, pos.cy - sizeY * 0.3, 5, pos.cx, pos.cy, sizeX * 1.1);
-        grad.addColorStop(0, r.border + "20");
-        grad.addColorStop(1, "rgba(4, 6, 14, 0)");
-        ctx.fillStyle = grad;
-        ctx.beginPath();
-        ctx.ellipse(pos.cx, pos.cy, sizeX * 1.1, sizeY * 1.1, 0, 0, Math.PI * 2);
-        ctx.fill();
-      });
-
-      drawDebateConnections();
-
+      // Draw room diamond bases
       ROOMS_CONFIG.forEach(drawRoom);
 
       frameCountRef.current++;
-      const currentFrame = frameCountRef.current;
 
-      agentsStateRef.current.forEach((a) => {
-        if (a.bubbleTimer > 0) a.bubbleTimer--;
-        if (a.speakTimer > 0) {
-          a.speakTimer--;
-          a.speaking = true;
-        } else {
-          a.speaking = false;
-        }
-
-        const roomPos = centers[a.id];
-        if (!roomPos) return;
-
-        if (a.moving) {
-          const dx = a.tx - a.lx;
-          const dy = a.ty - a.ly;
-          const dist = Math.sqrt(dx * dx + dy * dy);
-
-          if (dist < 2.0) {
-            a.moving = false;
-            a.idleTimer = 80 + Math.random() * 160;
-          } else {
-            const stepVal = Math.min(a.speed, dist);
-            a.lx += (dx / dist) * stepVal;
-            a.ly += (dy / dist) * stepVal;
-
-            if (Math.abs(dx) > Math.abs(dy)) {
-              a.facing = dx > 0 ? "right" : "left";
-            } else {
-              a.facing = dy > 0 ? "down" : "up";
-            }
-          }
-        } else {
-          a.idleTimer--;
-          if (a.idleTimer <= 0) {
-            a.tx = (Math.random() - 0.5) * (sizeX - 60);
-            a.ty = (Math.random() - 0.5) * (sizeY - 35);
-            a.moving = true;
-          }
-        }
-
-        a.sx = roomPos.cx + (a.lx - a.ly);
-        a.sy = roomPos.cy + (a.lx + a.ly) * 0.5 - 12;
-
-        drawCharacter(Math.round(a.sx), Math.round(a.sy), a.color, a.facing, currentFrame, a.speaking);
-        drawBubble(a);
-      });
-
-      // Draw all unified room nameplate badges after all rooms and characters to prevent floor clipping
+      // Draw all unified room nameplate badges
       ROOMS_CONFIG.forEach(drawRoomNameplate);
-
-      ctx.fillStyle = "rgba(0, 0, 0, 0.035)";
-      for (let sy = 0; sy < H; sy += 3.5) {
-        ctx.fillRect(0, sy, W, 1.2);
-      }
 
       animFrameId = requestAnimationFrame(render);
     };
@@ -1830,327 +1156,850 @@ export default function Dashboard() {
     const mx = e.clientX - rect.left;
     const my = e.clientY - rect.top;
 
-    ROOMS_CONFIG.forEach((r, i) => {
-      const agState = agentsStateRef.current[i];
-      if (!agState) return;
+    ROOMS_CONFIG.forEach((r) => {
+      const pos = centers[r.id];
+      if (!pos) return;
 
-      const dist = Math.sqrt(Math.pow(mx - agState.sx, 2) + Math.pow(my - agState.sy, 2));
+      const dist = Math.sqrt(Math.pow(mx - pos.cx, 2) + Math.pow(my - pos.cy, 2));
       
-      if (dist < 40 * scaleMultiplierRef.current) {
-        agState.speakTimer = 100;
-        agState.bubbleTimer = 165;
-        agState.bubble = r.bubble;
+      if (dist < 50 * scaleMultiplierRef.current) {
         addChatMessage("system", `📌 ตรวจเช็คข้อมูลเอเจนต์ประจำแผนก: ${r.name} [${r.role}] — สแตนบายพร้อมอัปเดตสถิติ`);
       }
     });
   };
 
   return (
-    <div className="h-screen w-screen bg-[#000000] text-[#c8d8f0] flex flex-col overflow-hidden font-sans select-none">
+    <div className="h-screen w-screen bg-[#000000] text-[#c8d8f0] flex overflow-hidden font-sans select-none">
       
-      {/* ── TOPBAR ── */}
-      <header className="bg-[#000000] border-b border-[#1e2d45] flex items-center gap-2 px-3.5 h-10 flex-shrink-0">
-        <div className="text-[11px] font-black text-[#f0b429] tracking-wider font-mono">
-          🏢 <span>TRADE</span> OFFICE
-        </div>
-        <div className="w-[1px] h-[18px] bg-[#1e2d45] mx-1"></div>
-        <div className="flex items-center gap-1.5 bg-[#111520] border border-[#1e2d45] rounded px-2.5 py-0.5 text-[11px] text-[#7a9bbf]">
-          <span className="w-1.5 h-1.5 rounded-full bg-[#10b981] shadow-[0_0_5px_#10b981] animate-pulse"></span>
-          Notion
-        </div>
-        <div className="flex items-center gap-1.5 bg-[#111520] border border-[#1e2d45] rounded px-2.5 py-0.5 text-[11px] text-[#7a9bbf]">
-          <span className="w-1.5 h-1.5 rounded-full bg-[#10b981] shadow-[0_0_5px_#10b981]"></span>
-          Google Drive
-        </div>
-        <div className="flex items-center gap-1.5 bg-[#111520] border border-[#1e2d45] rounded px-2.5 py-0.5 text-[11px] text-[#7a9bbf]">
-          <span className="w-1.5 h-1.5 rounded-full bg-[#3b82f6] shadow-[0_0_5px_#3b82f6] animate-pulse"></span>
-          Binance CCXT
-        </div>
-
-        <div className="flex-1"></div>
-
-        {wsStatus === "connected" ? (
-          <div className="text-[10px] px-2.5 py-0.5 rounded bg-[#0d2a14] border border-[#1a5a28] text-[#10b981] font-mono font-bold">
-            ⬤ WS Connected
+      {/* ── SIDEBAR ── */}
+      <aside className="w-[172px] min-w-[172px] bg-[#070a0f] border-r border-[#1e2d45] flex flex-col flex-shrink-0">
+        <div className="p-4 border-b border-[#1e2d45] flex items-center gap-2">
+          <div className="flex-shrink-0 text-white">
+            <svg className="w-6 h-6 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 5a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1V5z" />
+              <path strokeLinecap="round" strokeLinejoin="round" d="M14 5a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1V5z" />
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 15a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1v-4z" />
+              <path strokeLinecap="round" strokeLinejoin="round" d="M14 15a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z" />
+              <path strokeLinecap="round" strokeLinejoin="round" d="M10 10h4v4h-4z" />
+            </svg>
           </div>
-        ) : wsStatus === "connecting" ? (
-          <div className="text-[10px] px-2.5 py-0.5 rounded bg-[#0d1929] border border-[#1a3a6a] text-[#3b82f6] font-mono animate-pulse">
-            ⬤ WS Connecting...
+          <div>
+            <div className="text-[12.5px] font-black text-white tracking-wider leading-none font-mono">TRADE OFFICE</div>
+            <div className="text-[9.5px] text-[#5c7a9c] font-medium mt-1 leading-none">v2.21.0 • Active</div>
           </div>
-        ) : (
-          <div className="text-[10px] px-2.5 py-0.5 rounded bg-[#1f0d0d] border border-[#4a1a1a] text-[#ef4444] font-mono font-bold">
-            ⬤ WS Disconnected
-          </div>
-        )}
-
-        <div 
-          onClick={fetchStateData}
-          className="flex items-center gap-1.5 bg-[#111520] border border-[#1e2d45] hover:bg-[#161c2a] rounded px-2.5 py-0.5 text-[11px] text-[#c8d8f0] cursor-pointer transition font-bold"
-        >
-          ✏️ Edit Mode
         </div>
-        <div className="w-5 h-5 rounded-full bg-[#1e2d45] text-[9px] font-bold text-[#3b82f6] flex items-center justify-center border border-[#3b82f6]">
-          C
-        </div>
-      </header>
 
-      {/* ── LAYOUT CONTENT ── */}
-      <div className="flex flex-1 overflow-hidden">
-        
-        {/* ── SIDEBAR ── */}
-        <aside className="w-[172px] min-w-[172px] bg-black/40 backdrop-blur-md border-r border-white/10 flex flex-col flex-shrink-0">
-          <div className="p-3 border-b border-white/10">
-            <div className="text-[18px] mb-1">🏢</div>
-            <div className="text-[8px] font-black text-[#f0b429] tracking-wider leading-relaxed">TRADE OFFICE</div>
-            <div className="text-[10px] text-[#3d5a7a]">v2.21.0 · Active</div>
-          </div>
-
-          <div className="p-2 space-y-3">
-            <div>
-              <div className="px-3 py-1 text-[9px] text-[#3d5a7a] tracking-wider uppercase font-bold"># MAIN</div>
-              <nav className="space-y-0.5 mt-1 font-semibold">
-                <button 
-                  onClick={() => setActiveMenu("Office Overview")}
-                  className={getMenuButtonClass("Office Overview")}
-                >
-                  🖥 Office Overview
-                </button>
-                <button 
-                  onClick={() => {
-                    setActiveMenu("Chat Center");
-                    setUnreadCount(0);
-                  }}
-                  className={getMenuButtonClass("Chat Center")}
-                >
-                  <span>💬 Chat Center</span>
-                  {unreadCount > 0 && (
-                    <span className="bg-[#da3633] text-white text-[8px] px-1.5 py-0.2 rounded-full font-bold">
-                      {unreadCount}
-                    </span>
-                  )}
-                </button>
-                <button 
-                  onClick={() => setActiveMenu("AI Agents")}
-                  className={getMenuButtonClass("AI Agents")}
-                >
-                  <span>🤖 AI Agents</span>
-                  <span className="bg-[#238636] text-white text-[8px] px-1.5 py-0.2 rounded font-bold">
-                    9
+        <div className="py-3 space-y-3">
+          <div>
+            <div className="px-3.5 py-1 text-[8.5px] text-[#3d5a7a] tracking-wider uppercase font-bold">MAIN</div>
+            <nav className="space-y-0.5 mt-1 font-semibold">
+              <button 
+                onClick={() => setActiveMenu("Office Overview")}
+                className={getMenuButtonClass("Office Overview")}
+              >
+                <span className="flex items-center">
+                  <svg className="w-3.5 h-3.5 mr-2 text-inherit" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v4a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v4a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" /></svg>
+                  Office Overview
+                </span>
+              </button>
+              <button 
+                onClick={() => {
+                  setActiveMenu("Chat Center");
+                  setUnreadCount(0);
+                }}
+                className={getMenuButtonClass("Chat Center")}
+              >
+                <span className="flex items-center">
+                  <svg className="w-3.5 h-3.5 mr-2 text-inherit" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" /></svg>
+                  Chat Center
+                </span>
+                {unreadCount > 0 ? (
+                  <span className="bg-[#10b981] text-white text-[8.5px] px-2 py-0.5 rounded-full font-extrabold shadow-[0_0_5px_rgba(16,185,129,0.3)]">
+                    {unreadCount}
                   </span>
-                </button>
-                <button 
-                  onClick={() => setActiveMenu("Workflow Board")}
-                  className={getMenuButtonClass("Workflow Board")}
-                >
-                  📋 Workflow Board
-                </button>
-              </nav>
+                ) : (
+                  <span className="bg-[#10b981] text-white text-[8.5px] px-2 py-0.5 rounded-full font-extrabold shadow-[0_0_5px_rgba(16,185,129,0.3)]">
+                    7
+                  </span>
+                )}
+              </button>
+              <button 
+                onClick={() => setActiveMenu("AI Agents")}
+                className={getMenuButtonClass("AI Agents")}
+              >
+                <span className="flex items-center">
+                  <svg className="w-3.5 h-3.5 mr-2 text-inherit" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z" /></svg>
+                  AI Agents
+                </span>
+                <span className="bg-[#10b981] text-white text-[8.5px] px-2 py-0.5 rounded-full font-extrabold shadow-[0_0_5px_rgba(16,185,129,0.3)]">
+                  9
+                </span>
+              </button>
+              <button 
+                onClick={() => setActiveMenu("Workflow Board")}
+                className={getMenuButtonClass("Workflow Board")}
+              >
+                <span className="flex items-center">
+                  <svg className="w-3.5 h-3.5 mr-2 text-inherit" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" /></svg>
+                  Workflow Board
+                </span>
+              </button>
+            </nav>
+          </div>
+
+          <div>
+            <div className="px-3.5 py-1 text-[8.5px] text-[#3d5a7a] tracking-wider uppercase font-bold">TRADING</div>
+            <nav className="space-y-0.5 mt-1 font-semibold">
+              <button 
+                onClick={() => setActiveMenu("Analytics")}
+                className={getMenuButtonClass("Analytics")}
+              >
+                <span className="flex items-center">
+                  <svg className="w-3.5 h-3.5 mr-2 text-inherit" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>
+                  Analytics
+                </span>
+              </button>
+              <button 
+                onClick={() => setActiveMenu("Performance Dashboard")}
+                className={getMenuButtonClass("Performance Dashboard")}
+              >
+                <span className="flex items-center">
+                  <svg className="w-3.5 h-3.5 mr-2 text-inherit" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+                  Performance Dashboard
+                </span>
+              </button>
+              <button 
+                onClick={() => setActiveMenu("Risk Monitor")}
+                className={getMenuButtonClass("Risk Monitor")}
+              >
+                <span className="flex items-center">
+                  <svg className="w-3.5 h-3.5 mr-2 text-inherit" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
+                  Risk Monitor
+                </span>
+              </button>
+              <button 
+                onClick={() => setActiveMenu("Reports")}
+                className={getMenuButtonClass("Reports")}
+              >
+                <span className="flex items-center">
+                  <svg className="w-3.5 h-3.5 mr-2 text-inherit" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4" /></svg>
+                  ERP & Reports
+                </span>
+              </button>
+            </nav>
+          </div>
+
+          <div>
+            <div className="px-3.5 py-1 text-[8.5px] text-[#3d5a7a] tracking-wider uppercase font-bold">SYSTEM</div>
+            <nav className="space-y-0.5 mt-1 font-semibold">
+              <button 
+                onClick={() => setActiveMenu("Settings")}
+                className={getMenuButtonClass("Settings")}
+              >
+                <span className="flex items-center">
+                  <svg className="w-3.5 h-3.5 mr-2 text-inherit" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+                  Settings
+                </span>
+              </button>
+            </nav>
+          </div>
+        </div>
+
+        <div className="mt-auto p-2">
+          <div className="border border-[#1e2d45] bg-[#070b11]/80 rounded-lg p-2.5 flex flex-col gap-1">
+            <div className="flex items-center gap-1.5 text-[11px] text-[#10b981] font-bold">
+              <span className="w-1.5 h-1.5 rounded-full bg-[#10b981] shadow-[0_0_6px_#10b981]"></span>
+              WS Connected
+            </div>
+            <div className="text-[#5c7a9c] text-[9.5px] font-medium leading-none font-mono">
+              Binance CCXT • 52ms
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      {/* ── CENTER AREA ── */}
+      <div className="flex-1 flex flex-col overflow-hidden">
+        
+        {/* ── TOPBAR ── */}
+        <header className="bg-[#070a0f] border-b border-[#1e2d45] flex items-center justify-between px-4 h-[52px] flex-shrink-0">
+          {/* Left: Portfolio statistics */}
+          <div className="flex items-center gap-6 text-xs">
+            {/* PnL Today */}
+            <div className="flex flex-col gap-0.5">
+              <span className="text-[#5c7a9c] text-[9.5px] font-medium uppercase font-mono">PnL Today</span>
+              <div className="flex items-center gap-1.5 font-bold font-mono">
+                <span className={todayPnLSum >= 0 ? "text-[#10b981]" : "text-[#f87171]"}>
+                  {todayPnLSum >= 0 ? "+" : ""}${todayPnLSum.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                </span>
+                <span className={`text-[10px] ${todayPnLSum >= 0 ? "text-[#10b981]" : "text-[#f87171]"}`}>
+                  {todayPnLSum >= 0 ? "+" : ""}{pnlPct.toFixed(2)}%
+                </span>
+              </div>
             </div>
 
-            <div>
-              <div className="px-3 py-1 text-[9px] text-[#3d5a7a] tracking-wider uppercase font-bold"># TRADING</div>
-              <nav className="space-y-0.5 mt-1 font-semibold">
-                <button 
-                  onClick={() => setActiveMenu("Analytics")}
-                  className={getMenuButtonClass("Analytics")}
-                >
-                  📊 Analytics
-                </button>
-                <button 
-                  onClick={() => setActiveMenu("Performance Dashboard")}
-                  className={getMenuButtonClass("Performance Dashboard")}
-                >
-                  📈 Performance Dashboard
-                </button>
-                <button 
-                  onClick={() => setActiveMenu("Risk Monitor")}
-                  className={getMenuButtonClass("Risk Monitor")}
-                >
-                  ⚠️ Risk Monitor
-                </button>
-                <button 
-                  onClick={() => setActiveMenu("Reports")}
-                  className={getMenuButtonClass("Reports")}
-                >
-                  📊 ERP & Reports
-                </button>
-              </nav>
+            {/* Equity */}
+            <div className="flex flex-col gap-0.5">
+              <span className="text-[#5c7a9c] text-[9.5px] font-medium uppercase font-mono">Equity</span>
+              <div className="font-bold text-white font-mono">
+                ${totalEquity.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+              </div>
             </div>
 
-            <div>
-              <div className="px-3 py-1 text-[9px] text-[#3d5a7a] tracking-wider uppercase font-bold"># SYSTEM</div>
-              <nav className="space-y-0.5 mt-1 font-semibold">
-                <button 
-                  onClick={() => setActiveMenu("Settings")}
-                  className={getMenuButtonClass("Settings")}
-                >
-                  ⚙️ Settings
-                </button>
-              </nav>
+            {/* Win Rate */}
+            <div className="flex flex-col gap-0.5">
+              <span className="text-[#5c7a9c] text-[9.5px] font-medium uppercase font-mono">Win Rate</span>
+              <div className="font-bold text-white font-mono">
+                {closedOrders.length > 0 ? ((closedOrders.filter(o => o.pnl > 0).length / closedOrders.length) * 100).toFixed(1) : "0.0"}%
+              </div>
+            </div>
+
+            {/* Open Positions */}
+            <div className="flex flex-col gap-0.5">
+              <span className="text-[#5c7a9c] text-[9.5px] font-medium uppercase font-mono">Open Positions</span>
+              <div className="font-bold text-white font-mono">
+                {activeTradesCount}
+              </div>
+            </div>
+
+            {/* Risk Level */}
+            <div className="flex flex-col gap-0.5">
+              <span className="text-[#5c7a9c] text-[9.5px] font-medium uppercase font-mono">Risk Level</span>
+              <div className="font-bold text-[#10b981] font-mono">
+                {riskForm.riskPct > 3 ? "HIGH" : riskForm.riskPct > 1.5 ? "MEDIUM" : "LOW"}
+              </div>
             </div>
           </div>
 
-          <div className="mt-auto p-3 border-t border-white/10 text-[10.5px] text-[#7a9bbf] leading-relaxed">
-            <div className="flex items-center gap-1.5">
+          {/* Right: Status and profile */}
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-1.5 bg-[#0d2a14]/30 border border-[#1a5a28]/40 px-2.5 py-0.5 rounded-full text-[10px] text-[#10b981] font-bold font-mono">
               <span className="w-1.5 h-1.5 rounded-full bg-[#10b981] shadow-[0_0_5px_#10b981]"></span>
-              9 Agents · Online
+              WS Connected
             </div>
-            <div className="text-[#10b981] text-[9.5px] mt-1 font-bold">MT5 & CCXT Binance</div>
+            
+            {/* Bell notification */}
+            <button className="relative p-1 text-[#7a9bbf] hover:text-white transition">
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+              </svg>
+              <span className="absolute -top-0.5 -right-0.5 w-3.5 h-3.5 bg-red-500 rounded-full text-[8px] text-white font-extrabold flex items-center justify-center">
+                3
+              </span>
+            </button>
+
+            {/* Profile badge */}
+            <div className="w-6 h-6 rounded-full bg-[#0d1520] border border-[#1e2d45] text-[11px] font-bold text-white flex items-center justify-center font-mono">
+              C
+            </div>
           </div>
-        </aside>
+        </header>
 
         {/* ── CENTRAL MAIN WORKSPACE ── */}
         <main className="flex-1 flex flex-col overflow-hidden relative">
           
-          {/* TAB 1: 🖥 Office Overview (Isometric Neon Tech Canvas) */}
-          <div className={`flex-1 relative overflow-hidden bg-[#000000] ${activeMenu === "Office Overview" ? "block" : "hidden"}`} ref={wrapRef}>
-            <canvas 
-              id="office" 
-              ref={canvasRef}
-              onClick={handleCanvasClick}
-              className="block w-full h-full cursor-pointer"
-            />
+          {/* TAB 1: 🖥 Overview (Trading layout with candlestick chart, workforce grid, positions table, and bottom-right Risk Gate) */}
+          <div className={`flex-1 flex flex-col p-4 gap-4 bg-[#000000] overflow-y-auto ${activeMenu === "Overview" ? "block" : "hidden"}`}>
             
-            {/* ── Bottom Center: Risk Gate Control Bar (2-row layout) ── */}
-            <div className="absolute bottom-3 left-1/2 -translate-x-1/2 w-[820px] max-w-[98vw] bg-[#000000]/90 border border-[#1e2d45] rounded-xl px-3 py-2 shadow-2xl backdrop-blur-md flex flex-col gap-1.5">
-
-              {/* แถวบน: Label + Indicators + Auto Scan */}
-              <div className="flex items-center gap-2">
-                {/* Symbol selector */}
-                <div className="flex flex-col gap-0.5 min-w-[80px]">
-                  <div className="text-[8px] text-[#f59e0b] font-bold uppercase tracking-wider">📡 Risk Gate</div>
-                  <select
-                    value={symbol}
-                    onChange={(e) => handleSymbolChange(e.target.value)}
-                    className="bg-[#111520] border border-[#1e2d45] rounded text-[9px] text-white p-0.5 outline-none font-mono font-bold w-full"
-                  >
-                    {SYMBOLS_LIST.map((s) => (
-                      <option key={s.symbol} value={s.symbol}>{s.symbol}</option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* Indicators */}
-                <div className="flex gap-2 text-center text-[9px] bg-[#0a0d16] border border-[#1e2d45] px-2 py-1 rounded font-mono flex-1">
-                  <div className="flex-1">
-                    <div className="text-[#3d5a7a] text-[7.5px]">ราคา</div>
-                    <div className="font-bold text-white">{latestPrice || "-"}</div>
-                  </div>
-                  <div className="flex-1">
-                    <div className="text-[#3d5a7a] text-[7.5px]">EMA</div>
-                    <div className={`font-bold ${indicators?.trend === "Bullish" ? "text-[#10b981]" : "text-[#f87171]"}`}>{indicators?.trend || "-"}</div>
-                  </div>
-                  <div className="flex-1">
-                    <div className="text-[#3d5a7a] text-[7.5px]">RSI</div>
-                    <div className="font-bold text-white">{indicators?.rsi || "-"}</div>
-                  </div>
-                  <div className="flex-1">
-                    <div className="text-[#3d5a7a] text-[7.5px]">Signal</div>
-                    <div className={`font-bold ${signal?.action === "BUY" ? "text-[#10b981]" : signal?.action === "SELL" ? "text-[#f87171]" : "text-slate-400"}`}>{signal?.action || "WAIT"}</div>
-                  </div>
-                </div>
-
-                {/* 🤖 Auto Scan — วางแยกชัดเจนขวาสุดแถวบน */}
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={handleToggleMode}
-                    className={`px-3 py-1.5 text-[9px] font-bold rounded border transition whitespace-nowrap flex items-center gap-1 ${
-                      mode === "auto"
-                        ? "bg-[#0d2a3a] text-[#22d3ee] border-[#1a5a7a] shadow-[0_0_10px_#22d3ee55]"
-                        : "bg-[#111827] text-[#7a9bbf] border-[#1e2d45] hover:bg-[#1e2d45] hover:text-[#c8d8f0]"
-                    }`}
-                  >
-                    <span className={`w-1.5 h-1.5 rounded-full ${mode === "auto" ? "bg-[#22d3ee] shadow-[0_0_5px_#22d3ee]" : "bg-[#3d5a7a]"}`} />
-                    {mode === "auto" ? "AUTO ON" : "Auto Scan"}
-                  </button>
-                  {mode === "auto" && (
-                    <div className="flex items-center gap-1.5 text-[8px] text-[#7a9bbf] bg-[#111827]/60 border border-[#1e2d45] rounded px-2 py-1">
-                      <span className="w-1.5 h-1.5 rounded-full bg-[#22d3ee] animate-pulse shadow-[0_0_4px_#22d3ee]" />
-                      {signalActivity.length > 0 && signalActivity[0].status === "APPROVED" ? (
-                        <span className="text-emerald-400">✅ Signal Approved</span>
-                      ) : signalActivity.length > 0 && signalActivity[0].status === "REJECTED" ? (
-                        <span className="text-red-400">❌ Signal Rejected</span>
-                      ) : (
-                        <span className="text-slate-400">⏳ Waiting for signal...</span>
-                      )}
+            {/* ── ROW 1: CANDLESTICK CHART ── */}
+            <div className="bg-[#070a0f] border border-[#1e2d45] rounded-xl p-3 flex flex-col gap-2.5 h-[360px] min-h-[360px] shadow-lg">
+              {/* Chart Header */}
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="flex flex-col">
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-bold text-white text-[14px] font-mono">{symbol}</span>
+                      <svg className="w-3.5 h-3.5 text-[#fbbf24] cursor-pointer" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5"><path strokeLinecap="round" strokeLinejoin="round" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.907c.961 0 1.36 1.24.588 1.81l-3.97 2.883a1 1 0 00-.364 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.971-2.883a1 1 0 00-1.176 0l-3.97 2.883c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.364-1.118l-3.97-2.883c-.768-.57-.37-1.81.588-1.81h4.907a1 1 0 00.95-.69l1.519-4.674z" /></svg>
                     </div>
+                    <span className="text-[10px] text-[#5c7a9c] font-medium leading-none mt-0.5 font-mono">
+                      {SYMBOLS_LIST.find(s => s.symbol === symbol)?.name || "Binance Asset"}
+                    </span>
+                  </div>
+                  <div className="h-6 w-[1px] bg-[#1e2d45]" />
+                  <div className="flex flex-col">
+                    <span className="text-[14px] font-black text-white font-mono leading-none">
+                      {latestPrice ? latestPrice.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}) : "-"}
+                    </span>
+                    <span className="text-[9.5px] font-mono text-[#f87171] leading-none mt-1">
+                      -327.85 (-0.51%)
+                    </span>
+                  </div>
+                </div>
+
+                {/* Right specs */}
+                <div className="flex items-center gap-6 text-[10px] font-mono text-[#7a9bbf]">
+                  <div>
+                    <span className="text-[#5c7a9c]">High</span> <span className="font-bold text-white">{(latestPrice ? latestPrice * 1.01 : 64872.10).toLocaleString(undefined, {maximumFractionDigits: 2})}</span>
+                  </div>
+                  <div>
+                    <span className="text-[#5c7a9c]">Low</span> <span className="font-bold text-white">{(latestPrice ? latestPrice * 0.99 : 62980.45).toLocaleString(undefined, {maximumFractionDigits: 2})}</span>
+                  </div>
+                  <div>
+                    <span className="text-[#5c7a9c]">Volume</span> <span className="font-bold text-white">12.43K</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Chart Toolbar */}
+              <div className="flex items-center justify-between border-t border-b border-[#1e2d45]/40 py-1 text-[10.5px]">
+                <div className="flex items-center gap-1 font-semibold text-[#7a9bbf] font-mono">
+                  <span className="px-2 py-0.5 rounded hover:bg-white/5 cursor-pointer">1m</span>
+                  <span className="px-2 py-0.5 rounded hover:bg-white/5 cursor-pointer">5m</span>
+                  <span className="px-2 py-0.5 rounded hover:bg-white/5 cursor-pointer">15m</span>
+                  <span className="px-2 py-0.5 rounded bg-[#131d27] text-white cursor-pointer">1h</span>
+                  <span className="px-2 py-0.5 rounded hover:bg-white/5 cursor-pointer">4h</span>
+                  <span className="px-2 py-0.5 rounded hover:bg-white/5 cursor-pointer">D</span>
+                  <span className="px-2 py-0.5 rounded hover:bg-white/5 cursor-pointer">W</span>
+                  <div className="w-[1px] h-3 bg-[#1e2d45] mx-1" />
+                  <span className="px-2 py-0.5 rounded hover:bg-white/5 cursor-pointer flex items-center gap-1 text-[#22d3ee]">
+                    📊 Indicators
+                  </span>
+                  <span className="px-2 py-0.5 rounded hover:bg-white/5 cursor-pointer flex items-center gap-1">
+                    🔔 Alert
+                  </span>
+                </div>
+              </div>
+
+              {/* Chart Iframe Container */}
+              <div className="flex-1 rounded-lg overflow-hidden border border-[#1e2d45]/50 relative">
+                <TradingViewWidget symbol={symbol} />
+              </div>
+            </div>
+
+            {/* ── ROW 2: WORKFORCE AGENTS ── */}
+            <div className="grid grid-cols-6 gap-3">
+              {/* Risk AI */}
+              <div className="bg-[#070a0f] border border-[#1e2d45] rounded-xl p-3 flex flex-col justify-between h-[85px] shadow-sm relative group hover:border-[#ef4444]/30 transition">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[14px]">🛡️</span>
+                    <span className="font-bold text-white text-[11px] font-mono">Risk AI</span>
+                  </div>
+                  <span className="text-[8px] text-[#10b981] font-bold flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-[#10b981] animate-ping" /> Running
+                  </span>
+                </div>
+                <div className="flex justify-between items-end mt-2 text-[10px] font-mono">
+                  <div>
+                    <span className="text-[#5c7a9c] block text-[8px]">Risk Score</span>
+                    <span className="text-[#10b981] font-bold">32/100</span>
+                  </div>
+                  <div>
+                    <span className="text-[#5c7a9c] block text-[8px] text-right">Status</span>
+                    <span className="text-[#10b981] font-bold">Normal</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Strategy AI */}
+              <div className="bg-[#070a0f] border border-[#1e2d45] rounded-xl p-3 flex flex-col justify-between h-[85px] shadow-sm relative group hover:border-[#fbbf24]/30 transition">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[14px]">🎯</span>
+                    <span className="font-bold text-white text-[11px] font-mono">Strategy AI</span>
+                  </div>
+                  <span className="text-[8px] text-[#10b981] font-bold flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-[#10b981] animate-ping" /> Running
+                  </span>
+                </div>
+                <div className="flex justify-between items-end mt-2 text-[10px] font-mono">
+                  <div>
+                    <span className="text-[#5c7a9c] block text-[8px]">Signals Today</span>
+                    <span className="text-white font-bold">{signalActivity.length}</span>
+                  </div>
+                  <div>
+                    <span className="text-[#5c7a9c] block text-[8px] text-right">Run Rate</span>
+                    <span className="text-white font-bold">66.7%</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* EA Bot */}
+              <div className="bg-[#070a0f] border border-[#1e2d45] rounded-xl p-3 flex flex-col justify-between h-[85px] shadow-sm relative group hover:border-[#818cf8]/30 transition">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[14px]">🤖</span>
+                    <span className="font-bold text-white text-[11px] font-mono">EA Bot</span>
+                  </div>
+                  <span className="text-[8px] text-[#10b981] font-bold flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-[#10b981] animate-ping" /> Active
+                  </span>
+                </div>
+                <div className="flex justify-between items-end mt-2 text-[10px] font-mono">
+                  <div>
+                    <span className="text-[#5c7a9c] block text-[8px]">Trades Today</span>
+                    <span className="text-white font-bold">{(orders || []).filter(o => o.status === "CLOSED").length}</span>
+                  </div>
+                  <div>
+                    <span className="text-[#5c7a9c] block text-[8px] text-right">Win Rate</span>
+                    <span className="text-white font-bold">
+                      {closedOrders.length > 0 ? ((closedOrders.filter(o => o.pnl > 0).length / closedOrders.length) * 100).toFixed(0) : "0"}%
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Finance AI */}
+              <div className="bg-[#070a0f] border border-[#1e2d45] rounded-xl p-3 flex flex-col justify-between h-[85px] shadow-sm relative group hover:border-[#06b6d4]/30 transition">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[14px]">💰</span>
+                    <span className="font-bold text-white text-[11px] font-mono">Finance AI</span>
+                  </div>
+                  <span className="text-[8px] text-[#10b981] font-bold flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-[#10b981] animate-ping" /> Running
+                  </span>
+                </div>
+                <div className="flex justify-between items-end mt-2 text-[10px] font-mono">
+                  <div>
+                    <span className="text-[#5c7a9c] block text-[8px]">PnL Today</span>
+                    <span className={`font-bold ${todayPnLSum >= 0 ? "text-[#10b981]" : "text-[#f87171]"}`}>
+                      ${todayPnLSum.toFixed(0)}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-[#5c7a9c] block text-[8px] text-right">ROI</span>
+                    <span className="text-white font-bold">{pnlPct.toFixed(1)}%</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Audit AI */}
+              <div className="bg-[#070a0f] border border-[#1e2d45] rounded-xl p-3 flex flex-col justify-between h-[85px] shadow-sm relative group hover:border-[#a855f7]/30 transition">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[14px]">🔍</span>
+                    <span className="font-bold text-white text-[11px] font-mono">Audit AI</span>
+                  </div>
+                  <span className="text-[8px] text-[#10b981] font-bold flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-[#10b981] animate-ping" /> Running
+                  </span>
+                </div>
+                <div className="flex justify-between items-end mt-2 text-[10px] font-mono">
+                  <div>
+                    <span className="text-[#5c7a9c] block text-[8px]">Checks Today</span>
+                    <span className="text-white font-bold">{ledger.length}</span>
+                  </div>
+                  <div>
+                    <span className="text-[#5c7a9c] block text-[8px] text-right">Issues</span>
+                    <span className="text-[#10b981] font-bold">0</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* CEO Agent */}
+              <div className="bg-[#070a0f] border border-[#1e2d45] rounded-xl p-3 flex flex-col justify-between h-[85px] shadow-sm relative group hover:border-[#10b981]/30 transition">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[14px]">🕴️</span>
+                    <span className="font-bold text-white text-[11px] font-mono">CEO Agent</span>
+                  </div>
+                  <span className="text-[8px] text-[#10b981] font-bold flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-[#10b981] animate-ping" /> Active
+                  </span>
+                </div>
+                <div className="flex justify-between items-end mt-2 text-[10px] font-mono">
+                  <div>
+                    <span className="text-[#5c7a9c] block text-[8px]">Reports</span>
+                    <span className="text-white font-bold">3</span>
+                  </div>
+                  <div>
+                    <span className="text-[#5c7a9c] block text-[8px] text-right">Alerts</span>
+                    <span className="text-white font-bold">1</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* ── ROW 3: POSITIONS TABS & RISK GATE ── */}
+            <div className="flex gap-4">
+              {/* Tabbed Positions Table (Left) */}
+              <div className="flex-1 bg-[#070a0f] border border-[#1e2d45] rounded-xl p-3.5 shadow-lg flex flex-col h-[280px] min-h-[280px]">
+                {/* Tab selector */}
+                <div className="flex gap-5 border-b border-[#1e2d45]/40 pb-2 text-[11px] font-bold text-[#7a9bbf] font-mono cursor-pointer">
+                  {["POSITIONS", "ORDERS", "PORTFOLIO", "SIGNALS", "ALERTS"].map((tab) => {
+                    const isTabActive = tab === activeTab;
+                    return (
+                      <span 
+                        key={tab}
+                        onClick={() => setActiveTab(tab)}
+                        className={`${isTabActive ? "text-white border-b-2 border-[#fbbf24] pb-2" : "hover:text-white"}`}
+                      >
+                        {tab}
+                      </span>
+                    );
+                  })}
+                </div>
+
+                {/* Table contents */}
+                <div className="flex-1 overflow-y-auto mt-2 pr-1">
+                  {activeTab === "POSITIONS" && (
+                    <table className="w-full text-left text-[10.5px] font-mono">
+                      <thead>
+                        <tr className="text-[#5c7a9c] border-b border-[#1e2d45]/30">
+                          <th className="py-2">Symbol</th>
+                          <th className="py-2">Side</th>
+                          <th className="py-2">Size</th>
+                          <th className="py-2">Entry Price</th>
+                          <th className="py-2">Mark Price</th>
+                          <th className="py-2">PnL (USDT)</th>
+                          <th className="py-2">PnL %</th>
+                          <th className="py-2">Risk</th>
+                          <th className="py-2 text-center">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[#1e2d45]/20 text-white">
+                        {(() => {
+                          const openOrders = (orders || []).filter(o => o.status === "OPEN" || o.status === "PENDING");
+                          if (openOrders.length === 0) {
+                            return (
+                              <tr>
+                                <td colSpan={9} className="py-8 text-center text-slate-500 text-[10px]">
+                                  ไม่พบข้อมูลออเดอร์ที่กำลังทำงาน (Active Positions)
+                                </td>
+                              </tr>
+                            );
+                          }
+                          return openOrders.map((ord) => {
+                            const markPrice = priceMap[ord.symbol] || latestPrice || ord.entry_price;
+                            const pnlValue = (markPrice - ord.entry_price) * ord.volume * (ord.action === "BUY" ? 1 : -1);
+                            const pnlPctValue = ord.entry_price > 0 ? (pnlValue / (ord.entry_price * ord.volume)) * 100 : 0;
+                            return (
+                              <tr key={ord.id} className="hover:bg-white/5 cursor-pointer" onClick={() => handleSymbolChange(ord.symbol)}>
+                                <td className="py-2 font-bold">{ord.symbol}</td>
+                                <td className="py-2">
+                                  <span className={ord.action === "BUY" ? "text-[#10b981]" : "text-[#f87171]"}>{ord.action}</span>
+                                </td>
+                                <td className="py-2">{ord.volume}</td>
+                                <td className="py-2">${ord.entry_price.toLocaleString(undefined, {minimumFractionDigits: 2})}</td>
+                                <td className="py-2">${markPrice.toLocaleString(undefined, {minimumFractionDigits: 2})}</td>
+                                <td className={`py-2 font-bold ${pnlValue >= 0 ? "text-[#10b981]" : "text-[#f87171]"}`}>
+                                  {pnlValue >= 0 ? "+" : ""}${pnlValue.toFixed(2)}
+                                </td>
+                                <td className={`py-2 font-bold ${pnlValue >= 0 ? "text-[#10b981]" : "text-[#f87171]"}`}>
+                                  {pnlValue >= 0 ? "+" : ""}{pnlPctValue.toFixed(2)}%
+                                </td>
+                                <td className="py-2 text-[#10b981]">Low</td>
+                                <td className="py-2 text-center">
+                                  <button 
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleCloseOrder(ord.id);
+                                    }}
+                                    className="text-[9px] px-2 py-0.5 rounded bg-[#ef4444]/10 border border-[#ef4444]/30 text-[#f87171] hover:bg-[#ef4444]/30"
+                                  >
+                                    Close
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          });
+                        })()}
+                      </tbody>
+                    </table>
+                  )}
+
+                  {activeTab === "ORDERS" && (
+                    <table className="w-full text-left text-[10.5px] font-mono">
+                      <thead>
+                        <tr className="text-[#5c7a9c] border-b border-[#1e2d45]/30">
+                          <th className="py-2">ID</th>
+                          <th className="py-2">Symbol</th>
+                          <th className="py-2">Side</th>
+                          <th className="py-2">Size</th>
+                          <th className="py-2">Entry</th>
+                          <th className="py-2">Exit</th>
+                          <th className="py-2">PnL</th>
+                          <th className="py-2">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[#1e2d45]/20 text-white">
+                        {orders.length === 0 ? (
+                          <tr>
+                            <td colSpan={8} className="py-8 text-center text-slate-500 text-[10px]">
+                              ไม่พบประวัติออเดอร์
+                            </td>
+                          </tr>
+                        ) : (
+                          orders.map((ord) => (
+                            <tr key={ord.id} className="hover:bg-white/5 cursor-pointer" onClick={() => handleSymbolChange(ord.symbol)}>
+                              <td className="py-2 text-[#5c7a9c] max-w-[60px] truncate" title={ord.id}>
+                                {ord.id.slice(0, 8)}...
+                              </td>
+                              <td className="py-2 font-bold">{ord.symbol}</td>
+                              <td className="py-2">
+                                <span className={ord.action === "BUY" ? "text-[#10b981]" : "text-[#f87171]"}>{ord.action}</span>
+                              </td>
+                              <td className="py-2">{ord.volume}</td>
+                              <td className="py-2">${ord.entry_price.toLocaleString(undefined, {minimumFractionDigits: 2})}</td>
+                              <td className="py-2">
+                                {ord.exit_price ? `$${ord.exit_price.toLocaleString(undefined, {minimumFractionDigits: 2})}` : "-"}
+                              </td>
+                              <td className={`py-2 font-bold ${ord.pnl >= 0 ? "text-[#10b981]" : "text-[#f87171]"}`}>
+                                {ord.pnl >= 0 ? "+" : ""}${ord.pnl.toFixed(2)}
+                              </td>
+                              <td className="py-2">
+                                <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${
+                                  ord.status === "CLOSED" ? "bg-[#1e2d45] text-[#7a9bbf]" : "bg-emerald-950 text-emerald-400"
+                                }`}>
+                                  {ord.status}
+                                </span>
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  )}
+
+                  {activeTab === "PORTFOLIO" && (
+                    <table className="w-full text-left text-[10.5px] font-mono">
+                      <thead>
+                        <tr className="text-[#5c7a9c] border-b border-[#1e2d45]/30">
+                          <th className="py-2">Source</th>
+                          <th className="py-2">Equity</th>
+                          <th className="py-2">Balance</th>
+                          <th className="py-2">Free Margin</th>
+                          <th className="py-2">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[#1e2d45]/20 text-white">
+                        {balances.length === 0 ? (
+                          <tr>
+                            <td colSpan={5} className="py-8 text-center text-slate-500 text-[10px]">
+                              ไม่พบข้อมูลพอร์ตโฟลิโอ
+                            </td>
+                          </tr>
+                        ) : (
+                          balances.map((bal, idx) => (
+                            <tr key={idx} className="hover:bg-white/5">
+                              <td className="py-2 font-bold text-[#22d3ee]">{bal.source}</td>
+                              <td className="py-2 font-mono">${bal.equity.toLocaleString(undefined, {minimumFractionDigits: 2})}</td>
+                              <td className="py-2 font-mono">${bal.balance.toLocaleString(undefined, {minimumFractionDigits: 2})}</td>
+                              <td className="py-2 font-mono">${bal.free_margin.toLocaleString(undefined, {minimumFractionDigits: 2})}</td>
+                              <td className="py-2">
+                                <span className="text-[#10b981] font-bold">● Connected</span>
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  )}
+
+                  {activeTab === "SIGNALS" && (
+                    <table className="w-full text-left text-[10.5px] font-mono">
+                      <thead>
+                        <tr className="text-[#5c7a9c] border-b border-[#1e2d45]/30">
+                          <th className="py-2">Symbol</th>
+                          <th className="py-2">Action</th>
+                          <th className="py-2">Status</th>
+                          <th className="py-2">Reason</th>
+                          <th className="py-2 text-right">Time</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[#1e2d45]/20 text-white">
+                        {signalActivity.length === 0 ? (
+                          <tr>
+                            <td colSpan={5} className="py-8 text-center text-slate-500 text-[10px]">
+                              ไม่พบประวัติสัญญาณการเทรดวันนี้
+                            </td>
+                          </tr>
+                        ) : (
+                          signalActivity.map((sig, idx) => (
+                            <tr key={sig.id || idx} className="hover:bg-white/5 cursor-pointer" onClick={() => handleSymbolChange(sig.ticker)}>
+                              <td className="py-2 font-bold">{sig.ticker}</td>
+                              <td className="py-2">
+                                <span className={sig.action === "BUY" ? "text-[#10b981]" : "text-[#f87171]"}>{sig.action}</span>
+                              </td>
+                              <td className="py-2">
+                                <span className={`px-1.5 py-0.2 rounded text-[8.5px] font-bold ${
+                                  sig.status === "APPROVED" ? "bg-emerald-950 text-emerald-400" :
+                                  sig.status === "REJECTED" ? "bg-red-950 text-red-400" : "bg-amber-950 text-amber-400"
+                                }`}>
+                                  {sig.status}
+                                </span>
+                              </td>
+                              <td className="py-2 text-slate-400 max-w-[150px] truncate" title={sig.reason || ""}>
+                                {sig.reason || "-"}
+                              </td>
+                              <td className="py-2 text-[#5c7a9c] text-[9.5px] text-right">
+                                {new Date(sig.time).toLocaleTimeString()}
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  )}
+
+                  {activeTab === "ALERTS" && (
+                    <table className="w-full text-left text-[10.5px] font-mono">
+                      <thead>
+                        <tr className="text-[#5c7a9c] border-b border-[#1e2d45]/30">
+                          <th className="py-2">Time</th>
+                          <th className="py-2">Source</th>
+                          <th className="py-2">Summary</th>
+                          <th className="py-2">Impact</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[#1e2d45]/20 text-white">
+                        {newsFeed.length === 0 ? (
+                          <tr>
+                            <td colSpan={4} className="py-8 text-center text-slate-500 text-[10px]">
+                              ไม่พบข้อมูลข่าวสารหรือการแจ้งเตือน
+                            </td>
+                          </tr>
+                        ) : (
+                          newsFeed.map((news, idx) => (
+                            <tr key={idx} className="hover:bg-white/5">
+                              <td className="py-2 text-[#5c7a9c] text-[9.5px]">{news.time}</td>
+                              <td className="py-2 font-bold text-[#fbbf24]">{news.source}</td>
+                              <td className="py-2 max-w-[200px] truncate" title={news.text}>{news.text}</td>
+                              <td className="py-2">
+                                <span className={`px-1.5 py-0.5 rounded text-[8.5px] font-bold ${
+                                  news.impact === "HIGH" ? "bg-red-950 text-red-400" : "bg-amber-950 text-amber-400"
+                                }`}>
+                                  {news.impact}
+                                </span>
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
                   )}
                 </div>
               </div>
 
-              {/* แถวล่าง: Lot / SL / TP / Spread Limit / Reject / Risk % + ปุ่ม Action */}
-              <div className="flex items-center gap-2">
-                {/* Lot / SL / TP / Spread Limit / Reject / Risk % */}
-                <div className="flex gap-1.5 text-[8.5px]">
+              {/* RISK GATE (Right) */}
+              <div className="w-[360px] bg-[#070a0f] border border-[#1e2d45] rounded-xl p-3.5 shadow-lg flex flex-col h-[280px] min-h-[280px] justify-between">
+                
+                {/* แถวบน: Title + Auto Scan */}
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 text-[11px] text-[#fbbf24] font-extrabold uppercase tracking-wider font-mono">
+                    <svg className="w-4 h-4 text-[#fbbf24]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                    </svg>
+                    RISK GATE
+                  </div>
+                  
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={handleToggleMode}
+                      className={`px-2 py-1 text-[9px] font-bold rounded-full border transition flex items-center gap-1 ${
+                        mode === "auto"
+                          ? "bg-[#0d2a3a]/80 text-[#22d3ee] border-[#1a5a7a] shadow-[0_0_8px_#22d3ee44]"
+                          : "bg-[#111827] text-[#7a9bbf] border-[#1e2d45] hover:bg-[#1e2d45] hover:text-[#c8d8f0]"
+                      }`}
+                    >
+                      <span className={`w-1 h-1 rounded-full ${mode === "auto" ? "bg-[#22d3ee] shadow-[0_0_4px_#22d3ee]" : "bg-[#64748b]"}`} />
+                      Auto Scan
+                    </button>
+                  </div>
+                </div>
+
+                {/* Indicators Row */}
+                <div className="flex gap-2 text-center text-[10px] bg-[#000000]/40 border border-[#1e2d45] px-2.5 py-1.5 rounded-lg font-mono items-center justify-around">
                   <div>
-                    <span className="text-[#3d5a7a] block text-[7.5px]">Lot</span>
+                    <span className="text-[#5c7a9c] text-[8px] font-medium leading-none">ราคา</span>
+                    <div className="font-bold text-white mt-0.5 text-[9.5px]">{latestPrice ? latestPrice.toLocaleString() : "-"}</div>
+                  </div>
+                  <div className="w-[1px] h-3.5 bg-[#1e2d45]" />
+                  <div>
+                    <span className="text-[#5c7a9c] text-[8px] font-medium leading-none">EMA</span>
+                    <div className={`font-bold mt-0.5 text-[9.5px] ${indicators?.trend === "Bullish" ? "text-[#10b981]" : indicators?.trend === "Bearish" ? "text-[#f87171]" : "text-[#fbbf24]"}`}>{indicators?.trend || "-"}</div>
+                  </div>
+                  <div className="w-[1px] h-3.5 bg-[#1e2d45]" />
+                  <div>
+                    <span className="text-[#5c7a9c] text-[8px] font-medium leading-none">RSI</span>
+                    <div className="font-bold text-white mt-0.5 text-[9.5px]">{indicators?.rsi || "-"}</div>
+                  </div>
+                  <div className="w-[1px] h-3.5 bg-[#1e2d45]" />
+                  <div>
+                    <span className="text-[#5c7a9c] text-[8px] font-medium leading-none">Signal</span>
+                    <div className={`font-bold mt-0.5 text-[9.5px] ${signal?.action === "BUY" ? "text-[#10b981]" : signal?.action === "SELL" ? "text-[#f87171]" : "text-slate-400"}`}>{signal?.action || "WAIT"}</div>
+                  </div>
+                </div>
+
+                {/* Parameters block */}
+                <div className="grid grid-cols-3 gap-2 text-[9px] font-mono border-t border-[#1e2d45]/40 pt-2">
+                  <div>
+                    <span className="text-[#5c7a9c] block text-[8px] font-medium mb-0.5">คู่เหรียญ</span>
+                    <select
+                      value={symbol}
+                      onChange={(e) => handleSymbolChange(e.target.value)}
+                      className="bg-[#000000] border border-[#1e2d45] rounded text-[10px] text-white px-1 py-0.5 outline-none font-mono font-bold w-full h-[22px] cursor-pointer"
+                    >
+                      {SYMBOLS_LIST.map((s) => (
+                        <option key={s.symbol} value={s.symbol}>{s.symbol}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <span className="text-[#5c7a9c] block text-[8px] font-medium mb-0.5">Lot</span>
                     <input type="number" step="0.01" value={riskForm.lot}
                       onChange={(e) => setRiskForm({...riskForm, lot: Number(e.target.value)})}
-                      className="w-12 bg-[#111520] border border-[#1e2d45] rounded p-0.5 text-white font-mono text-center text-[9px]"
+                      className="w-full bg-[#000000] border border-[#1e2d45] rounded px-1 py-0.5 text-white font-bold text-center text-[10px] h-[22px] outline-none focus:border-[#3b82f6]"
                     />
                   </div>
                   <div>
-                    <span className="text-[#3d5a7a] block text-[7.5px]">SL (Pips)</span>
+                    <span className="text-[#5c7a9c] block text-[8px] font-medium mb-0.5">SL (Pips)</span>
                     <input type="number" value={riskForm.stopDistance}
                       onChange={(e) => setRiskForm({...riskForm, stopDistance: Number(e.target.value)})}
-                      className="w-12 bg-[#111520] border border-[#1e2d45] rounded p-0.5 text-white font-mono text-center text-[9px]"
+                      className="w-full bg-[#000000] border border-[#1e2d45] rounded px-1 py-0.5 text-white font-bold text-center text-[10px] h-[22px] outline-none focus:border-[#3b82f6]"
                     />
                   </div>
                   <div>
-                    <span className="text-[#3d5a7a] block text-[7.5px]">TP (Pips)</span>
+                    <span className="text-[#5c7a9c] block text-[8px] font-medium mb-0.5">TP (Pips)</span>
                     <input type="number" value={riskForm.takeProfit}
                       onChange={(e) => setRiskForm({...riskForm, takeProfit: Number(e.target.value)})}
-                      className="w-12 bg-[#111520] border border-[#1e2d45] rounded p-0.5 text-white font-mono text-center text-[9px]"
+                      className="w-full bg-[#000000] border border-[#1e2d45] rounded px-1 py-0.5 text-white font-bold text-center text-[10px] h-[22px] outline-none focus:border-[#3b82f6]"
                     />
                   </div>
                   <div>
-                    <span className="text-[#3d5a7a] block text-[7.5px]">Spread Limit</span>
+                    <span className="text-[#5c7a9c] block text-[8px] font-medium mb-0.5">Spread Limit</span>
                     <input type="number" step="0.1" value={riskForm.spread}
                       onChange={(e) => setRiskForm({...riskForm, spread: Number(e.target.value)})}
-                      className="w-14 bg-[#111520] border border-[#1e2d45] rounded p-0.5 text-white font-mono text-center text-[9px]"
+                      className="w-full bg-[#000000] border border-[#1e2d45] rounded px-1 py-0.5 text-white font-bold text-center text-[10px] h-[22px] outline-none focus:border-[#3b82f6]"
                     />
                   </div>
                   <div>
-                    <span className="text-[#3d5a7a] block text-[7.5px]">Reject &gt;</span>
-                    <input type="number" step="0.1" value={riskForm.rejectThreshold}
-                      onChange={(e) => setRiskForm({...riskForm, rejectThreshold: Number(e.target.value)})}
-                      className="w-12 bg-[#111520] border border-[#1e2d45] rounded p-0.5 text-white font-mono text-center text-[9px]"
-                    />
-                  </div>
-                  <div>
-                    <span className="text-[#3d5a7a] block text-[7.5px]">Risk %</span>
+                    <span className="text-[#5c7a9c] block text-[8px] font-medium mb-0.5">Risk %</span>
                     <input type="number" step="0.1" value={riskForm.riskPct}
                       onChange={(e) => setRiskForm({...riskForm, riskPct: Number(e.target.value)})}
-                      className="w-12 bg-[#111520] border border-[#1e2d45] rounded p-0.5 text-white font-mono text-center text-[9px]"
+                      className="w-full bg-[#000000] border border-[#1e2d45] rounded px-1 py-0.5 text-white font-bold text-center text-[10px] h-[22px] outline-none focus:border-[#3b82f6]"
                     />
                   </div>
                 </div>
 
-                {/* divider */}
-                <div className="w-px h-7 bg-[#1e2d45]" />
-
-                {/* Action buttons */}
-                <div className="flex items-center gap-1.5 flex-1">
-                  <button onClick={handleRiskTest} className="px-2.5 py-1.5 bg-[#1e2d45] hover:bg-[#243352] text-[9px] font-bold text-[#c8d8f0] rounded border border-[#243352] transition whitespace-nowrap">
-                    🔍 ประเมิน
+                {/* Actions row */}
+                <div className="flex items-center gap-1.5 border-t border-[#1e2d45]/40 pt-2 justify-between">
+                  <button onClick={handleRiskTest} className="px-2.5 py-1 bg-[#161f30] hover:bg-[#202d44] text-[9.5px] font-bold text-[#c8d8f0] rounded border border-[#243352] transition flex items-center gap-1 h-6">
+                    ประเมิน
                   </button>
-                  <div className={`px-2.5 py-1.5 text-[9px] font-bold rounded flex items-center border ${
+                  
+                  <div className={`px-2 py-1 text-[9.5px] font-bold rounded flex items-center gap-1 border h-6 ${
                     risk?.passed ? "bg-[#0d2a14] text-[#10b981] border-[#1a5a28]" : "bg-[#2a0d0d] text-[#f87171] border-[#6b1c1c]"
                   }`}>
-                    {risk?.passed ? "🟢 PASS" : "🔴 BLOCK"}
+                    <span className={`w-1 h-1 rounded-full ${risk?.passed ? "bg-[#10b981] shadow-[0_0_4px_#10b981]" : "bg-[#ef4444] shadow-[0_0_4px_#ef4444]"}`} />
+                    {risk?.passed ? "PASS" : "BLOCK"}
                   </div>
+                  
                   <button
                     onClick={handleApprove}
                     disabled={mode === "auto" || !signal || (signal.action !== "BUY" && signal.action !== "SELL")}
-                    className="px-2.5 py-1.5 bg-[#16a34a] hover:bg-[#15803d] disabled:bg-[#111520] disabled:text-[#3d5a7a] border border-[#15803d] disabled:border-[#1e2d45] text-white text-[9px] font-bold rounded transition whitespace-nowrap"
+                    className="px-3.5 py-1 bg-[#0e3a1f] hover:bg-[#14532d] disabled:bg-[#111520] disabled:text-[#3d5a7a] border border-[#166534] disabled:border-[#1e2d45] text-[#10b981] disabled:text-[#3d5a7a] text-[10px] font-bold rounded transition flex items-center gap-1.5 h-7"
                   >
-                    ✅ อนุมัติ
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5"><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
+                    อนุมัติ
                   </button>
+                  
                   <button
                     onClick={handleReject}
-                    className="px-2 py-1.5 bg-[#2a0d0d] hover:bg-[#5a1a1a] border border-[#5a1a1a] text-[#f87171] text-[9px] rounded transition"
+                    className="px-2.5 py-1 bg-[#2a0d0d] hover:bg-[#450a0a] border border-[#6b1c1c] text-[#f87171] text-[10px] font-bold rounded transition flex items-center justify-center h-7"
                   >
-                    ❌
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
                   </button>
                 </div>
               </div>
@@ -2158,32 +2007,44 @@ export default function Dashboard() {
             </div>
 
             {/* ── Top-Right: ERP Mini Widget ── */}
-            <div className="absolute right-3 top-3 w-60 bg-[#070a0f]/95 border border-[#1e2d45] rounded-lg p-2.5 shadow-2xl backdrop-blur-md">
-              <div className="flex justify-between items-center border-b border-[#1e2d45] pb-1.5 mb-1.5">
-                <div className="text-[9.5px] text-[#22d3ee] font-bold uppercase tracking-wider font-mono">💰 Team ERP</div>
-                <button onClick={fetchERPData} className="text-[7.5px] text-[#22d3ee] bg-[#22d3ee]/10 hover:bg-[#22d3ee]/20 px-1.5 rounded border border-[#22d3ee]/20 font-bold">
-                  รีเฟรช
-                </button>
+            <div className="absolute right-3 top-3 w-[200px] bg-[#070b11]/90 border border-[#1e2d45] rounded-xl p-3.5 shadow-2xl backdrop-blur-md">
+              <div className="flex justify-between items-center border-b border-[#1e2d45] pb-2 mb-2">
+                <div className="text-[11px] text-white font-extrabold tracking-wider font-mono">TEAM ERP</div>
+                <div className="text-[8px] bg-emerald-950/80 border border-emerald-500/30 text-[#10b981] px-1.5 py-0.2 rounded-full font-bold uppercase tracking-wide">Live</div>
               </div>
+              
               {taxSummary ? (
-                <div className="text-[9px] space-y-0.5 font-mono">
-                  <div className="flex justify-between"><span className="text-[#7a9bbf]">PnL:</span><span className="text-[#10b981] font-bold">${taxSummary.accumulatedPnL.toFixed(2)}</span></div>
-                  <div className="flex justify-between"><span className="text-[#7a9bbf]">VAT คืน:</span><span className="text-[#22d3ee] font-bold">+${taxSummary.inputVatClaimable.toFixed(2)}</span></div>
-                  <div className="flex justify-between"><span className="text-[#7a9bbf]">ภาษี:</span><span className="text-[#ef4444] font-bold">-${taxSummary.estimatedIncomeTax.toFixed(2)}</span></div>
-                  <div className="flex justify-between border-t border-[#1e2d45] pt-0.5 mt-0.5"><span className="text-[#c8d8f0] font-bold">สุทธิ:</span><span className="text-[#10b981] font-bold">${taxSummary.netAfterTax.toFixed(2)}</span></div>
-                </div>
-              ) : (
-                <div className="text-[8.5px] text-[#3d5a7a] text-center py-1">กดรีเฟรชเพื่อดูงบดุล</div>
-              )}
-              {ledger.slice(-1).map((tx, idx) => (
-                <div key={idx} className="bg-[#0a0d16] p-1.5 rounded text-[7.5px] border border-[#1e2d45] font-mono mt-1.5">
-                  <div className="font-bold text-[#c8d8f0] truncate">{tx.description}</div>
-                  <div className="flex justify-between text-[7px] mt-0.5">
-                    <span className="text-[#10b981]">Dr: ${tx.debit.amount}</span>
-                    <span className="text-[#f59e0b]">Cr: ${tx.credit.amount}</span>
+                <div className="text-[10px] space-y-1.5 font-mono">
+                  <div className="flex justify-between">
+                    <span className="text-[#5c7a9c] font-medium">PnL</span>
+                    <span className="text-[#10b981] font-bold">${taxSummary.accumulatedPnL.toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[#5c7a9c] font-medium">VAT ค้าง</span>
+                    <span className="text-[#10b981] font-bold">+${taxSummary.inputVatClaimable.toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[#5c7a9c] font-medium">ภาษี</span>
+                    <span className="text-[#ef4444] font-bold">-${taxSummary.estimatedIncomeTax.toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between border-b border-[#1e2d45]/50 pb-2">
+                    <span className="text-[#5c7a9c] font-medium">พอร์ต</span>
+                    <span className="text-[#10b981] font-bold">${taxSummary.netAfterTax.toFixed(2)}</span>
                   </div>
                 </div>
-              ))}
+              ) : (
+                <div className="text-[10px] text-slate-500 text-center py-2 font-mono">Loading ERP...</div>
+              )}
+              
+              <div className="mt-2 font-mono">
+                <div className="text-[9px] text-[#5c7a9c] font-medium">สถานะระบบ</div>
+                <div className="text-[10px] text-white font-bold mt-0.5">ERP Ledger</div>
+                
+                <div className="flex justify-between text-[10px] font-bold mt-2 pt-2 border-t border-[#1e2d45]/50">
+                  <span className="text-[#10b981]">Dr: ${ledger.length > 0 ? ledger[ledger.length - 1].debit.amount.toLocaleString() : "0"}</span>
+                  <span className="text-[#fbbf24]">Cr: ${ledger.length > 0 ? ledger[ledger.length - 1].credit.amount.toLocaleString() : "0"}</span>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -3157,21 +3018,26 @@ python main.py`}
             </div>
           </div>
         </main>
+      </div>
 
-        {/* ── CHAT PANEL (ขวา - ย่อลงเหลือ 228px ตามแคปเจอร์) ── */}
-        <aside className="w-[228px] min-w-[228px] bg-[#070a0f] border-l border-[#1e2d45] flex flex-col flex-shrink-0">
-          <div className="p-2 border-b border-[#1e2d45] text-xs">
+      {/* ── CHAT & ACTIVITY LOG PANEL (ขวา) ── */}
+      <aside className="w-[260px] min-w-[260px] bg-[#070a0f] border-l border-[#1e2d45] flex flex-col flex-shrink-0 h-full">
+        {/* --- TEAM CHAT (TOP 55%) --- */}
+        <div className="h-[55%] min-h-[55%] flex flex-col border-b border-[#1e2d45]">
+          <div className="p-2 border-b border-[#1e2d45]/60 text-xs">
             <div className="flex items-center gap-2">
               <span className="text-[14px]">💬</span>
               <div>
-                <div className="font-bold text-[#c8d8f0] text-[12.5px]">Team Chat</div>
-                <div className="text-[#10b981] text-[9.5px] leading-tight">● System ready</div>
-                <div className="text-[#3d5a7a] text-[9.5px]">#ai-trading-team</div>
+                <div className="font-bold text-[#c8d8f0] text-[12.5px] leading-none">Team Chat</div>
+                <div className="text-[#10b981] text-[9px] mt-0.5 leading-tight flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-[#10b981] animate-pulse" />
+                  System ready
+                </div>
               </div>
             </div>
           </div>
 
-          <div className="flex-1 overflow-y-auto p-2 space-y-2 bg-[#000000]/30">
+          <div className="flex-1 overflow-y-auto p-2 space-y-2 bg-[#000000]/10">
             {chatMsgs.map((msg, idx) => (
               <div key={idx} className="bg-[#111520] border border-[#1e2d45] rounded p-2 space-y-1">
                 <div className="flex items-center gap-1.5">
@@ -3198,7 +3064,7 @@ python main.py`}
             <div ref={chatEndRef} />
           </div>
 
-          <form onSubmit={handleSendChat} className="p-2 border-t border-[#1e2d45] flex gap-1 bg-[#070a0f]">
+          <form onSubmit={handleSendChat} className="p-2 border-t border-[#1e2d45]/60 flex gap-1 bg-[#070a0f]">
             <input 
               type="text" 
               placeholder="พิมพ์ข้อความ..."
@@ -3208,14 +3074,46 @@ python main.py`}
             />
             <button 
               type="submit" 
-              className="bg-[#3b82f6] hover:bg-[#60a5fa] text-white px-2 rounded flex items-center justify-center text-[12px] transition cursor-pointer"
+              className="bg-[#10b881]/10 hover:bg-[#10b881]/20 border border-[#10b881]/30 text-emerald-400 px-3 rounded flex items-center justify-center transition cursor-pointer"
             >
-              ↗
+              <svg className="w-3.5 h-3.5 text-emerald-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
             </button>
           </form>
-        </aside>
+        </div>
 
+        {/* --- AI ACTIVITY LOG (BOTTOM 45%) --- */}
+        <div className="h-[45%] min-h-[45%] flex flex-col">
+          <div className="p-2 border-b border-[#1e2d45]/60 text-xs bg-[#070a0f]">
+            <div className="flex items-center gap-2">
+              <span className="text-[14px]">⚡</span>
+              <div>
+                <div className="font-bold text-[#c8d8f0] text-[12.5px] leading-none">AI Activity Log</div>
+                <div className="text-[#3d5a7a] text-[9.5px] mt-0.5">Live System Stream</div>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-2 space-y-1.5 bg-[#000000]/30 font-mono text-[10.5px]">
+            {activityLogs.map((log, idx) => (
+              <div key={idx} className="border-b border-[#1e2d45]/20 pb-1.5 last:border-b-0">
+                <div className="flex items-center gap-1.5 text-[9.5px]">
+                  <span 
+                    className="w-1.5 h-1.5 rounded-full" 
+                    style={{ backgroundColor: log.dotColor || "#10b981", boxShadow: `0 0 4px ${log.dotColor || "#10b981"}` }} 
+                  />
+                  <span className="font-bold" style={{ color: log.color }}>
+                    {log.agent}
+                  </span>
+                  <span className="text-[#3d5a7a] ml-auto">{log.time}</span>
+                </div>
+                <div className="text-[#a8c0d8] text-[10px] leading-tight mt-0.5 break-words pl-3">
+                  {log.text}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </aside>
       </div>
-    </div>
-  );
-}
+    );
+  }

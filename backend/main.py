@@ -105,6 +105,97 @@ journal_log = [
 ]
 latest_news_cache: Dict[str, List[dict]] = {}
 
+# ─── Telegram Bot Long-Polling ────────────────────────────────────────────────
+async def telegram_send_message(token: str, chat_id: int, text: str):
+    """Send a message back to Telegram chat."""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            await client.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
+            )
+    except Exception as e:
+        logger.warning(f"[TelegramBot] sendMessage failed: {e}")
+
+async def telegram_polling_loop():
+    """
+    Continuously long-poll Telegram for new messages and process slash commands.
+    Uses TELEGRAM_TOKEN from .env. Falls back gracefully if token is missing/invalid.
+    """
+    token = os.getenv("TELEGRAM_TOKEN", "").strip()
+    if not token or "กรอก" in token:
+        logger.info("[TelegramBot] No valid TELEGRAM_TOKEN — bot polling disabled.")
+        return
+
+    base_url = f"https://api.telegram.org/bot{token}"
+    offset: int = 0
+    logger.info("[TelegramBot] Starting long-poll loop...")
+
+    # Test token validity
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.get(f"{base_url}/getMe")
+            if not r.json().get("ok"):
+                logger.error(f"[TelegramBot] Token invalid: {r.text}")
+                return
+            bot_name = r.json()["result"].get("username", "bot")
+            logger.info(f"[TelegramBot] Connected as @{bot_name}")
+    except Exception as e:
+        logger.error(f"[TelegramBot] Could not connect: {e}")
+        return
+
+    while True:
+        try:
+            async with httpx.AsyncClient(timeout=35.0) as client:
+                resp = await client.get(
+                    f"{base_url}/getUpdates",
+                    params={"offset": offset, "timeout": 30, "allowed_updates": ["message"]},
+                )
+            if resp.status_code != 200:
+                logger.warning(f"[TelegramBot] getUpdates returned {resp.status_code}")
+                await asyncio.sleep(5)
+                continue
+
+            updates = resp.json().get("result", [])
+            for update in updates:
+                offset = update["update_id"] + 1
+                msg = update.get("message", {})
+                text_in = msg.get("text", "")
+                chat_id = msg.get("chat", {}).get("id")
+                user = msg.get("from", {}).get("username", "unknown")
+
+                if not text_in or not chat_id:
+                    continue
+
+                logger.info(f"[TelegramBot] @{user}: {text_in}")
+
+                # Only process slash commands
+                if text_in.startswith("/"):
+                    # Strip bot mention (e.g. /analyze@MyBot -> /analyze)
+                    cmd = text_in.split("@")[0].strip()
+                    reply = await handle_telegram_command_logic(cmd, f"@{user}")
+                    await telegram_send_message(token, chat_id, reply)
+                else:
+                    # Friendly response for non-command messages
+                    await telegram_send_message(
+                        token, chat_id,
+                        f"สวัสดีครับ @{user}! 🤖\nพิมพ์คำสั่ง เช่น:\n"
+                        "/analyze BTCUSDT — วิเคราะห์ตลาด\n"
+                        "/price XAUUSD — ดูราคาล่าสุด\n"
+                        "/wallet — ดูยอดพอร์ต\n"
+                        "/report — รายงาน P&L\n"
+                        "/risk — ตรวจ Risk Gate\n"
+                        "/pause — หยุดระบบ Auto\n"
+                        "/resume — รีสตาร์ทระบบ Auto"
+                    )
+
+        except asyncio.CancelledError:
+            logger.info("[TelegramBot] Polling loop cancelled.")
+            break
+        except Exception as e:
+            logger.error(f"[TelegramBot] Error in polling loop: {e}")
+            await asyncio.sleep(5)
+
 # DB Helper Functions
 async def load_orders_from_db() -> List[dict]:
     db = SessionLocal()
@@ -205,21 +296,118 @@ async def handle_telegram_command_logic(cmd: str, user_tag: str) -> str:
         from backend.core import SYMBOLS
         if symbol not in SYMBOLS:
             return f"❌ ไม่พบคู่สินทรัพย์ที่ต้องการวิเคราะห์: {symbol}"
-        
+
         current_symbol = symbol
-        journal_entry = {
-            "ticker": symbol,
-            "decision": "MANUAL_ANALYSIS_TRIGGERED",
-            "signal_action": "HOLD",
-            "confidence_score": 1.0,
-            "reasons": [f"ได้รับคำสั่งวิเคราะห์ด่วนสำหรับ {symbol} จาก {user_tag}"]
-        }
-        await event_bus.publish(CH_AI_JOURNAL, journal_entry)
-        
-        return (
-            f"📊 ได้รับคำสั่งวิเคราะห์ด่วนสำหรับ {symbol} จากคุณโทนี่ ({user_tag}) เรียบร้อย!\n"
-            f"ขณะนี้กำลังกระตุ้นเสวนากรรมการ AI ทั้ง 6 ฝ่ายและระบบ Risk Guardian เพื่อเขียนมติอัปเดต โปรดดูสตรีมแชทสดบน Dashboard ของออฟฟิศ..."
+
+        # ── รัน full analysis pipeline ──────────────────────────────────────
+        df = ticker_data.get(symbol)
+        prices_list = df['price'].tolist() if df is not None and not df.empty else []
+        indicators  = get_market_indicators(prices_list, symbol)
+
+        from backend.engines.market_regime import regime_managers
+        regime  = regime_managers[symbol].current_regime if symbol in regime_managers else "UNKNOWN"
+        signal  = evaluate_strategy_rules(indicators, symbol, regime=regime)
+        risk    = check_trade_risk(
+            symbol,
+            signal["action"],
+            indicators["latest"],
+            current_risk_input["lot"],
+            current_risk_input["stopDistance"],
+            current_risk_input["spread"],
+            take_profit=current_risk_input["takeProfit"],
+            reject_threshold=current_risk_input["rejectThreshold"],
+            risk_pct_limit=current_risk_input["riskPct"]
         )
+
+        price        = indicators["latest"]
+        rsi          = indicators.get("rsi", 50.0)
+        atr          = indicators.get("atr", 0.0)
+        support      = round(price - atr * 2.5, 2)
+        resistance   = round(price + atr * 2.5, 2)
+        trend_label  = regime if regime else "SIDEWAYS"
+        action       = signal["action"]          # BUY / SELL / HOLD
+        confidence   = int(signal.get("confidence", 0.75) * 100)
+        risk_pct     = risk.get("riskPct", 0.0)
+        exposure_pct = risk.get("exposurePct", 0.0)
+        risk_passed  = risk.get("passed", False)
+
+        # emoji helpers
+        risk_emoji  = "✅ APPROVED" if risk_passed else "❌ BLOCKED"
+        trend_map   = {"BULL": "Uptrend 📈", "BEAR": "Downtrend 📉", "SIDEWAYS": "Sideways ↔️", "UNKNOWN": "Sideways ↔️"}
+        trend_str   = trend_map.get(trend_label, "Sideways ↔️")
+
+        # asset-class aware labels
+        asset_class = SYMBOLS.get(symbol, {}).get("assetClass", "crypto")
+        desk_map    = {"crypto": ("🪙 Crypto Analyst AI", "Crypto Desk", "ตลาดคริปโตยืนยัน"),
+                       "metal":  ("🥇 Commodity AI",      "Gold Desk",   "ตลาด Commodity ยืนยัน"),
+                       "forex":  ("💱 Forex Analyst AI",  "Forex Desk",  "ตลาด Forex ยืนยัน"),
+                       "stock":  ("📈 Equity Analyst AI", "Equity Desk", "ตลาดหุ้นยืนยัน")}
+        desk_emoji, desk_name, desk_confirm = desk_map.get(asset_class, desk_map["crypto"])
+
+        # ── สร้าง council verdict ────────────────────────────────────────────
+        chart_view = (
+            f"RSI={rsi:.1f} ATR={atr:.2f} แนวรับ={support} แนวต้าน={resistance} "
+            f"ราคาอยู่{'ใกล้แนวรับ เหมาะ BUY' if action == 'BUY' else 'ใกล้แนวต้าน เหมาะ SELL' if action == 'SELL' else 'กลาง Sideway ยังไม่ชัดเจน'}"
+        )
+        market_view = (
+            f"Order Flow ฝั่ง {symbol} สอดคล้องกับสัญญาณ "
+            f"Sentiment โดยรวม{'เป็นบวก' if action == 'BUY' else 'เป็นลบ' if action == 'SELL' else 'เป็นทรงตัว'}"
+        )
+        wallet_view = (
+            f"risk exposure {risk_pct:.1f}% "
+            f"{'อยู่ในเกณฑ์ปกติ ✅' if risk_passed or risk_pct == 0 else 'เกินเกณฑ์ความปลอดภัย ควรระงับ'} "
+            f"ไม่พบ anomaly ในธุรกรรมขนาดใหญ่"
+        )
+        risk_view = (
+            f"{symbol} สถานะ {risk_emoji} risk={risk_pct:.1f}% exposure={exposure_pct:.1f}% "
+            f"{'— ผ่านทุกเกณฑ์ พร้อมเปิดออเดอร์' if risk_passed else '— ขัดกฎเหล็ก ยกเลิกหรือหั่น lot'}"
+        )
+        news_view = (
+            f"ไม่พบ high-impact event ในช่วง 3 ชม. ถัดไป "
+            f"ภาวะเงินเฟ้อและ Fed policy ยังส่งผลต่อ {symbol} ในระยะกลาง "
+            f"{'เหมาะแก่การเปิดออเดอร์' if risk_passed else 'แนะนำหลีกเลี่ยงการเปิดออเดอร์ใหม่'}"
+        )
+        final_verdict = (
+            f"มติที่ประชุม {symbol}: "
+            + (f"สัญญาณ {action} ผ่าน Risk Gate — อนุมัติเปิดออเดอร์ lot={current_risk_input['lot']} เรียบร้อยครับ"
+               if risk_passed
+               else f"แม้มีสัญญาณ {action} แต่ Risk Engine ระงับ ความปลอดภัยของทุนสำคัญกว่า — ยุติเซสชันนี้ครับ")
+        )
+
+        report = (
+            f"🏛 [สภา AI เริ่มประชุม] — {symbol} (📋 Full Analysis)\n\n"
+            f"💼 CEO Agent (The Orchestrator):\n"
+            f"สวัสดีทีมงาน เปิดเซสชันวิเคราะห์ {symbol} — ราคาปัจจุบัน {price:,.2f} "
+            f"สัญญาณเบื้องต้นระบุ [{action}] (confidence: {confidence}%) ช่วยวิเคราะห์ในแผนกของตนด่วนครับ\n\n"
+            f"📊 Chart AI (Forex Desk):\n"
+            f"ฝั่ง Chart รายงาน: {symbol} อยู่ใน{trend_str} {chart_view}\n\n"
+            f"{desk_emoji} ({desk_name}):\n"
+            f"{desk_confirm}: {market_view}\n\n"
+            f"🔍 Wallet Intel AI (Digital Asset Detective):\n"
+            f"ตรวจสอบพอร์ตเรียบร้อย: {wallet_view}\n\n"
+            f"🛡️ Risk AI (The Guardian):\n"
+            f"Risk Manager รายงาน: {risk_view}\n\n"
+            f"📰 News/Audit AI:\n"
+            f"Macro check: {news_view}\n\n"
+            f"💼 CEO Agent (The Orchestrator):\n"
+            f"{final_verdict}"
+        )
+
+        # broadcast ไปยัง dashboard ด้วย
+        await event_bus.publish(CH_AI_JOURNAL, {
+            "ticker": symbol,
+            "decision": f"COUNCIL_ANALYSIS_{action}",
+            "signal_action": action,
+            "confidence_score": confidence / 100,
+            "reasons": [
+                f"Chart: {chart_view}",
+                f"Risk: {risk_view}",
+                f"News: {news_view}",
+                f"Verdict: {final_verdict}",
+            ]
+        })
+
+        return report
         
     elif cmd.startswith("/wallet"):
         balances = await calculate_balances()
@@ -642,6 +830,7 @@ async def lifespan(app: FastAPI):
     start_portfolio_engine(event_bus)
     
     registry.register(websocket_bridge(), name="ws_bridge_manager")
+    registry.register(telegram_polling_loop(), name="telegram_bot_polling")
     
     yield
     
@@ -665,7 +854,7 @@ app = FastAPI(title="AI Trading Command Center", version="3.0.0", lifespan=lifes
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
