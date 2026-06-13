@@ -20,6 +20,18 @@ CALIBRATION_TRIGGER = {
 TRADING_DAY_RESET_TZ = "America/New_York"
 DAILY_LOSS_RESET_HOUR_UTC = 22
 
+# Account starting capital — single source of truth (was hardcoded 45750 in 4 places).
+# Override via env STARTING_BALANCE. Account equity = STARTING_BALANCE + closed PnL.
+STARTING_BALANCE = float(os.getenv("STARTING_BALANCE", "45750"))
+
+# Display-only split of total equity across funding sources for the dashboard.
+# NOT a real per-broker balance — purely cosmetic until real broker accounts exist.
+ACCOUNT_DISPLAY_SPLITS = {
+    "MT5": 0.55,
+    "BINANCE": 0.27,
+    "ONCHAIN_WALLET": 0.18,
+}
+
 FEATURE_FLAGS = {
     "circuit_breaker_v2": True,
     "rr_filter": True,

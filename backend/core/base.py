@@ -32,15 +32,52 @@ def validate_price(price: float, context: str = "") -> float:
         raise ValueError(f"Invalid price: {price} ใน {context}")
     return price
 
+from backend.config import STARTING_BALANCE
+
 # ค่าคอนฟิกความเสี่ยงตามนโยบายระบบเทรดของคุณโทนี่
 RISK_CONFIG = {
-    "equity": 45750.00,
+    "equity": STARTING_BALANCE,
     "maxRiskPerTradePct": 2.0,  # กฎความเสี่ยงสูงสุดต่อไม้ 2%
     "maxDailyLossPct": 3.0,
     "maxOpenExposurePct": 20.0,
     "maxSpread": 3.0,
     "minStopDistance": 10.0
 }
+
+# Pip size per asset class — used to express bid/ask spread in pips.
+PIP_SIZE = {"metal": 0.1, "forex": 0.0001, "crypto": 1.0, "stock": 0.01, "index": 1.0}
+# Deterministic typical spread (pips) used when no genuine broker spread exists
+# (e.g. TwelveData/mock feeds synthesize bid/ask, so their spread is not real).
+TYPICAL_SPREAD_PIPS = {"metal": 2.0, "forex": 1.0, "crypto": 2.0, "stock": 2.0, "index": 1.0}
+# Feeds that report a genuine broker/exchange bid-ask spread.
+_REAL_SPREAD_SOURCES = {"binance", "mt5", "finnhub"}
+
+
+def current_spread_pips(symbol: str) -> float:
+    """Deterministic broker spread in pips for `symbol`.
+
+    Uses the live bid/ask only when it comes from a real exchange/broker feed;
+    otherwise returns a realistic per-asset-class default. Never random.
+    """
+    spec = SYMBOLS.get(symbol, SYMBOLS["XAUUSD"])
+    asset_class = spec.get("assetClass", "metal")
+    typical = TYPICAL_SPREAD_PIPS.get(asset_class, 2.0)
+    try:
+        from backend.engines.providers.base import latest_prices
+        data = latest_prices.get(symbol)
+        if (
+            data
+            and data.get("source") in _REAL_SPREAD_SOURCES
+            and data.get("ask")
+            and data.get("bid")
+        ):
+            pip = PIP_SIZE.get(asset_class, 0.1)
+            live = (data["ask"] - data["bid"]) / pip
+            if live > 0:
+                return round(live, 2)
+    except Exception:
+        pass
+    return typical
 
 SYMBOLS = {
     "XAUUSD": {"base": 2342.0, "volatility": 7.5, "tickValue": 1.0, "decimals": 2, "contractSize": 100, "assetClass": "metal"},
@@ -666,22 +703,29 @@ def check_trade_risk(
     circuit_breaker_triggered: bool = False,
     take_profit: float = 40.0,
     reject_threshold: float = 3.0,
-    risk_pct_limit: float = 1.5
+    risk_pct_limit: float = 1.5,
+    equity: Optional[float] = None,
+    broker_spread: Optional[float] = None,
 ) -> Dict[str, Any]:
-    """ตรวจสอบกฎเหล็กบริหารความเสี่ยง 6 ประการ"""
+    """ตรวจสอบกฎเหล็กบริหารความเสี่ยง 6 ประการ
+
+    equity / broker_spread are injected by callers for a single source of truth.
+    When omitted they are derived deterministically (no random, no hardcoded balance).
+    """
     spec = SYMBOLS.get(symbol, SYMBOLS["XAUUSD"])
 
-    from backend.shared.database.core import SessionLocal
-    from backend.shared.database.models import Trade, TradeStatus
-    db = SessionLocal()
-    try:
-        closed_trades = db.query(Trade).filter(Trade.status == TradeStatus.CLOSED).all()
-        total_pnl = sum([t.realized_pnl for t in closed_trades if t.realized_pnl])
-        equity = 45750.00 + total_pnl
-    except Exception:
-        equity = 45750.00
-    finally:
-        db.close()
+    if equity is None:
+        from backend.shared.database.core import SessionLocal
+        from backend.shared.database.models import Trade, TradeStatus
+        db = SessionLocal()
+        try:
+            closed_trades = db.query(Trade).filter(Trade.status == TradeStatus.CLOSED).all()
+            total_pnl = sum([t.realized_pnl for t in closed_trades if t.realized_pnl])
+            equity = STARTING_BALANCE + total_pnl
+        except Exception:
+            equity = STARTING_BALANCE
+        finally:
+            db.close()
 
     contract_size = spec.get("contractSize", 100)
     risk_dollars = lot * stop_distance * contract_size
@@ -690,9 +734,9 @@ def check_trade_risk(
     exposure_dollars = lot * price * contract_size
     exposure_pct = (exposure_dollars / equity) * 100
 
-    # Simulate broker spread fluctuating between 1.5 and 3.2
-    import random
-    broker_spread = round(random.uniform(1.5, 3.2), 2)
+    # Deterministic broker spread from the real feed (was random.uniform).
+    if broker_spread is None:
+        broker_spread = current_spread_pips(symbol)
 
     checks = [
         {"name": "มีสัญญาณซื้อขายหลัก (ไม่ใช่ WAIT)", "pass": bool(action in ["BUY", "SELL"])},

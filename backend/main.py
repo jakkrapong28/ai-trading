@@ -19,9 +19,10 @@ from backend.shared.events.core import (
     CH_AI_JOURNAL, CH_RISK_APPROVED, CH_RISK_REJECTED, 
     CH_EXEC_OPENED, CH_EXEC_CLOSED, CH_PORTFOLIO_UPDATED, CH_PORTFOLIO_SNAPSHOT, CH_NEWS, CH_AI_DECISION, correlation_id_ctx
 )
-from backend.shared.database.core import Base, engine, SessionLocal
+from backend.shared.database.core import Base, engine, SessionLocal, run_db
 from backend.shared.database.models import Trade, TradeStatus, TradeAction, ERPDeliveryRecord
 from backend.shared.tasks import registry
+from backend.shared.webhooks import fire_erp_webhook
 
 from backend.engines.market_data import start_market_data_engine, latest_prices, get_latest_price
 from backend.engines.news_intelligence import start_news_intelligence_engine
@@ -32,7 +33,9 @@ from backend.engines.execution import start_execution_engine
 from backend.engines.portfolio import start_portfolio_engine, global_metrics
 from backend.agents import start_ai_decision_engine
 from backend.core import get_market_indicators, evaluate_strategy_rules, check_trade_risk
+from backend.core.base import current_spread_pips
 from backend.core.candle_manager import CandleManager, candle_managers
+from backend.services import accounting
 
 class CorrelationFilter(logging.Filter):
     def filter(self, record):
@@ -52,6 +55,51 @@ logger = logging.getLogger("main")
 
 event_bus = EventBus()
 http_client: httpx.AsyncClient = None
+
+
+def mask_secret(value: str) -> str:
+    """Mask a secret for safe exposure in API responses: '****1234' (last 4)."""
+    if not value:
+        return ""
+    if len(value) <= 4:
+        return "****"
+    return "****" + value[-4:]
+
+
+# Indicator cache: recompute heavy TA at most once per INDICATOR_TTL seconds
+# per symbol. Indicators are derived from real H1 OHLC candles (true ATR),
+# falling back to the raw tick history only until candles are seeded.
+_indicator_cache: dict = {}  # symbol -> (monotonic_ts, indicators)
+INDICATOR_TTL = 2.0
+
+
+def get_cached_indicators(symbol: str) -> dict:
+    import time
+    now = time.monotonic()
+    cached = _indicator_cache.get(symbol)
+
+    if cached and (now - cached[0]) < INDICATOR_TTL:
+        indicators = dict(cached[1])
+    else:
+        # Prefer real OHLC candles (gives true-range ATR + real volume).
+        cm = candle_managers.get(symbol)
+        source = None
+        if cm is not None:
+            df_ohlc = cm.get_ohlc("H1")
+            if df_ohlc is not None and len(df_ohlc) >= 8:
+                source = df_ohlc
+        if source is None:
+            # Fallback: raw tick history until candles are bootstrapped.
+            df = ticker_data.get(symbol)
+            source = df['price'].tolist() if df is not None and not df.empty else []
+        indicators = get_market_indicators(source, symbol)
+        _indicator_cache[symbol] = (now, dict(indicators))
+
+    # Always overlay the freshest live price so 'latest' is never stale.
+    live = latest_prices.get(symbol)
+    if live and live.get("last_price"):
+        indicators["latest"] = live["last_price"]
+    return indicators
 
 class ConnectionManager:
     def __init__(self):
@@ -199,71 +247,13 @@ async def telegram_polling_loop():
 
 # DB Helper Functions
 async def load_orders_from_db() -> List[dict]:
-    db = SessionLocal()
-    try:
-        trades = db.query(Trade).order_by(Trade.opened_at.desc()).limit(100).all()
-        orders = []
-        for t in trades:
-            orders.append({
-                "id": t.id,
-                "symbol": t.ticker,
-                "action": t.action.value,
-                "volume": t.lot_size,
-                "entry_price": t.entry_price or 0.0,
-                "exit_price": t.exit_price or 0.0,
-                "sl_price": t.sl_price or 0.0,
-                "tp_price": t.tp_price or 0.0,
-                "pnl": t.realized_pnl or 0.0,
-                "fee": 0.0,
-                "status": t.status.value,
-                "opened_at": t.opened_at.isoformat() if t.opened_at else None,
-                "closed_at": t.closed_at.isoformat() if t.closed_at else None
-            })
-        return orders
-    except Exception as e:
-        logger.error(f"Error loading orders from DB: {e}")
-        return []
-    finally:
-        db.close()
+    # Delegates to the accounting service (non-blocking, single source of truth).
+    return await accounting.get_orders(limit=100)
 
 async def calculate_balances() -> List[dict]:
-    db = SessionLocal()
-    try:
-        closed_trades = db.query(Trade).filter(Trade.status == TradeStatus.CLOSED).all()
-        total_pnl = sum([t.realized_pnl for t in closed_trades if t.realized_pnl])
-        balance = 45750.00 + total_pnl
-
-        open_trades = db.query(Trade).filter(Trade.status.in_([TradeStatus.OPEN, TradeStatus.RUNNING, TradeStatus.PARTIAL])).all()
-        floating_pnl = 0.0
-        for t in open_trades:
-            current = latest_prices.get(t.ticker)
-            if current:
-                current_price = current["last_price"]
-                entry = t.entry_price or 0.0
-                lot = t.lot_size or 0.0
-                from backend.core import SYMBOLS
-                spec = SYMBOLS.get(t.ticker, SYMBOLS["XAUUSD"])
-                contract_size = spec.get("contractSize", 100)
-                if t.action.value == "BUY":
-                    floating_pnl += (current_price - entry) * lot * contract_size
-                else:
-                    floating_pnl += (entry - current_price) * lot * contract_size
-        equity = balance + floating_pnl
-        
-        return [
-            {"source": "MT5", "equity": round(equity * 0.55, 2), "balance": round(balance * 0.55, 2), "free_margin": round(balance * 0.55, 2)},
-            {"source": "BINANCE", "equity": round(equity * 0.27, 2), "balance": round(balance * 0.27, 2), "free_margin": round(balance * 0.27, 2)},
-            {"source": "ONCHAIN_WALLET", "equity": round(equity * 0.18, 2), "balance": round(balance * 0.18, 2), "free_margin": round(balance * 0.18, 2)}
-        ]
-    except Exception as e:
-        logger.error(f"Error calculating balances: {e}")
-        return [
-            {"source": "MT5", "equity": 25162.5, "balance": 25162.5, "free_margin": 25162.5},
-            {"source": "BINANCE", "equity": 12352.5, "balance": 12352.5, "free_margin": 12352.5},
-            {"source": "ONCHAIN_WALLET", "equity": 8235.0, "balance": 8235.0, "free_margin": 8235.0}
-        ]
-    finally:
-        db.close()
+    # Delegates to the accounting service; equity = STARTING_BALANCE + closed PnL
+    # + floating PnL, split for display per config.ACCOUNT_DISPLAY_SPLITS.
+    return await accounting.get_display_balances(latest_prices)
 
 # Request Models
 class TelegramCommandRequest(BaseModel):
@@ -304,9 +294,7 @@ async def handle_telegram_command_logic(cmd: str, user_tag: str) -> str:
         current_symbol = symbol
 
         # ── รัน full analysis pipeline ──────────────────────────────────────
-        df = ticker_data.get(symbol)
-        prices_list = df['price'].tolist() if df is not None and not df.empty else []
-        indicators  = get_market_indicators(prices_list, symbol)
+        indicators = get_cached_indicators(symbol)
 
         from backend.engines.market_regime import regime_managers
         regime  = regime_managers[symbol].current_regime if symbol in regime_managers else "UNKNOWN"
@@ -448,13 +436,8 @@ async def handle_telegram_command_logic(cmd: str, user_tag: str) -> str:
         if symbol not in SYMBOLS:
             return f"❌ ไม่พบคู่สินทรัพย์: {symbol}"
             
-        df = ticker_data.get(symbol)
-        if df is not None and not df.empty:
-            prices_list = df['price'].tolist()
-        else:
-            prices_list = []
-        indicators = get_market_indicators(prices_list, symbol)
-        
+        indicators = get_cached_indicators(symbol)
+
         return (
             f"📈 [ราคาเสนอซื้อล่าสุด]\n"
             f"คู่เหรียญ/หุ้น: {symbol}\n"
@@ -472,12 +455,7 @@ async def handle_telegram_command_logic(cmd: str, user_tag: str) -> str:
         )
         
     elif cmd.startswith("/risk"):
-        df = ticker_data.get(current_symbol)
-        if df is not None and not df.empty:
-            prices_list = df['price'].tolist()
-        else:
-            prices_list = []
-        indicators = get_market_indicators(prices_list, current_symbol)
+        indicators = get_cached_indicators(current_symbol)
         from backend.engines.market_regime import regime_managers
         regime = regime_managers[current_symbol].current_regime if current_symbol in regime_managers else None
         signal = evaluate_strategy_rules(indicators, current_symbol, regime=regime)
@@ -528,73 +506,7 @@ async def handle_telegram_command_logic(cmd: str, user_tag: str) -> str:
             
             from backend.brokers.paper import PaperBroker
             from backend.shared.schema.events import ExecutionEvent
-            import uuid, json, hmac, hashlib
             broker = PaperBroker()
-            
-            async def fire_erp_webhook_local(event_type: str, event_data: dict, trade_id: str, entry_price: float):
-                erp_url = os.getenv("ERP_WEBHOOK_URL", "http://localhost:5001/webhook/trade-event")
-                erp_api_key = os.getenv("ERP_API_KEY", "")
-                erp_webhook_secret = os.getenv("ERP_WEBHOOK_SECRET", "")
-                idemp_key = str(uuid.uuid4())
-                
-                payload = {
-                    "event": event_type,
-                    "data": {
-                        "trade_id": trade_id,
-                        "symbol": event_data["ticker"],
-                        "action": event_data["action"],
-                        "price": event_data.get("exit_price", 0),
-                        "exit_price": event_data.get("exit_price", 0),
-                        "entry_price": entry_price,
-                        "volume": event_data["lot_size"],
-                        "lot_size": event_data["lot_size"],
-                        "pnl": event_data["realized_pnl"],
-                        "fee": 0.0
-                    }
-                }
-                raw_body = json.dumps(payload, separators=(',', ':'), sort_keys=False)
-                signature = ""
-                if erp_webhook_secret:
-                    sig_hex = hmac.new(
-                        erp_webhook_secret.encode('utf-8'),
-                        raw_body.encode('utf-8'),
-                        hashlib.sha256
-                    ).hexdigest()
-                    signature = f"sha256={sig_hex}"
-                    
-                db_erp = SessionLocal()
-                try:
-                    record = ERPDeliveryRecord(
-                        trade_id=trade_id,
-                        idempotency_key=idemp_key,
-                        request_payload=payload
-                    )
-                    db_erp.add(record)
-                    db_erp.commit()
-                    
-                    headers = {
-                        "Idempotency-Key": idemp_key,
-                        "X-Api-Key": erp_api_key,
-                        "Content-Type": "application/json"
-                    }
-                    if signature:
-                        headers["X-Signature"] = signature
-                        
-                    async with httpx.AsyncClient() as client:
-                        resp = await client.post(
-                            erp_url,
-                            content=raw_body,
-                            headers=headers,
-                            timeout=3.0
-                        )
-                        record.response_code = resp.status_code
-                        record.response_body = resp.text
-                        record.status = "SUCCESS" if resp.status_code < 300 else "FAILED"
-                    db_erp.commit()
-                except Exception as ex:
-                    logger.error(f"Failed to fire ERP webhook for command close: {ex}")
-                finally:
-                    db_erp.close()
 
             for t in open_trades:
                 current_price = t.entry_price or 0.0
@@ -613,12 +525,13 @@ async def handle_telegram_command_logic(cmd: str, user_tag: str) -> str:
                     action=t.action.value if hasattr(t.action, "value") else t.action,
                     status="CLOSED",
                     lot_size=t.lot_size,
+                    entry_price=t.entry_price or 0.0,
                     exit_price=current_price,
                     realized_pnl=pnl,
                     message="Manual Command Close"
                 )
                 await event_bus.publish(CH_EXEC_CLOSED, closed_event.model_dump())
-                asyncio.create_task(fire_erp_webhook_local("trade.pnl_realized", closed_event.model_dump(), t.id, t.entry_price or 0.0))
+                asyncio.create_task(fire_erp_webhook("trade.pnl_realized", closed_event.model_dump(), t.id))
                 
             db.commit()
         except Exception as e:
@@ -737,12 +650,7 @@ async def websocket_bridge():
                             "price": price,
                         })
                     if ticker == current_symbol:
-                        df = ticker_data.get(current_symbol)
-                        if df is not None and not df.empty:
-                            prices_list = df['price'].tolist()
-                        else:
-                            prices_list = []
-                        indicators = get_market_indicators(prices_list, current_symbol)
+                        indicators = get_cached_indicators(current_symbol)
                         from backend.engines.market_regime import regime_managers
                         regime = regime_managers[current_symbol].current_regime if current_symbol in regime_managers else None
                         signal = evaluate_strategy_rules(indicators, current_symbol, regime=regime)
@@ -986,6 +894,36 @@ async def debug_prices():
 
 # Dashboard API Endpoints
 
+@app.get("/api/candles")
+async def get_candles(symbol: str = None, tf: str = "M15", bars: int = 200):
+    """Real OHLC candles from CandleManager — feeds the in-house AI chart."""
+    from backend.core.candle_manager import TIMEFRAMES
+    sym = (symbol or current_symbol).upper()
+    if tf not in TIMEFRAMES:
+        tf = "M15"
+    cm = candle_managers.get(sym)
+    if cm is None:
+        return {"symbol": sym, "tf": tf, "candles": []}
+
+    def _build():
+        df = cm.get_ohlc(tf, bars=bars)
+        rows = []
+        for _, r in df.iterrows():
+            ts = r["timestamp"]
+            rows.append({
+                "time": int(ts.timestamp()),
+                "open": float(r["open"]),
+                "high": float(r["high"]),
+                "low": float(r["low"]),
+                "close": float(r["close"]),
+                "volume": float(r.get("volume", 0) or 0),
+            })
+        return rows
+
+    candles = await asyncio.to_thread(_build)
+    return {"symbol": sym, "tf": tf, "candles": candles}
+
+
 @app.get("/api/state")
 async def get_state():
     from backend.engines.market_regime import regime_managers
@@ -995,16 +933,12 @@ async def get_state():
     from backend.config import FEATURE_FLAGS
     from backend.shared.database.models import SMCSignalLog
 
-    df = ticker_data.get(current_symbol)
-    if df is not None and not df.empty:
-        prices_list = df['price'].tolist()
-    else:
-        prices_list = []
-    
-    indicators = get_market_indicators(prices_list, current_symbol)
+    indicators = get_cached_indicators(current_symbol)
     regime = regime_managers[current_symbol].current_regime if current_symbol in regime_managers else None
     signal = evaluate_strategy_rules(indicators, current_symbol, regime=regime)
-    
+
+    # Single source of truth for equity + deterministic broker spread.
+    equity = await accounting.get_account_equity(latest_prices)
     risk = check_trade_risk(
         current_symbol,
         signal["action"],
@@ -1014,21 +948,24 @@ async def get_state():
         current_risk_input["spread"],
         take_profit=current_risk_input["takeProfit"],
         reject_threshold=current_risk_input["rejectThreshold"],
-        risk_pct_limit=current_risk_input["riskPct"]
+        risk_pct_limit=current_risk_input["riskPct"],
+        equity=equity,
+        broker_spread=current_spread_pips(current_symbol),
     )
-    
+
     orders = await load_orders_from_db()
     balances = await calculate_balances()
     
-    db = SessionLocal()
+    def _smc_counts(db):
+        return (
+            db.query(SMCSignalLog).filter(SMCSignalLog.calibrated_at.isnot(None)).count(),
+            db.query(SMCSignalLog).filter(SMCSignalLog.actual_outcome == "PENDING").count(),
+        )
     try:
-        calibrated_count = db.query(SMCSignalLog).filter(SMCSignalLog.calibrated_at.isnot(None)).count()
-        pending_count = db.query(SMCSignalLog).filter(SMCSignalLog.actual_outcome == "PENDING").count()
+        calibrated_count, pending_count = await run_db(_smc_counts)
     except Exception:
         calibrated_count = 0
         pending_count = 0
-    finally:
-        db.close()
         
     broker_heartbeat = None
     if hasattr(BrokerHeartbeat, "_instance") and BrokerHeartbeat._instance:
@@ -1049,13 +986,13 @@ async def get_state():
         "debate": [],
         "is_debating": False,
         "settings": {
-            "telegram_token": os.getenv("TELEGRAM_TOKEN", ""),
-            "anthropic_key": os.getenv("ANTHROPIC_API_KEY", ""),
-            "binance_key": os.getenv("BINANCE_API_KEY", ""),
-            "binance_secret": os.getenv("BINANCE_API_SECRET", ""),
-            "news_api_key": os.getenv("NEWS_API_KEY", ""),
-            "twelvedata_api_key": os.getenv("TWELVEDATA_API_KEY", ""),
-            "finnhub_api_key": os.getenv("FINNHUB_API_KEY", "")
+            "telegram_token": mask_secret(os.getenv("TELEGRAM_TOKEN", "")),
+            "anthropic_key": mask_secret(os.getenv("ANTHROPIC_API_KEY", "")),
+            "binance_key": mask_secret(os.getenv("BINANCE_API_KEY", "")),
+            "binance_secret": mask_secret(os.getenv("BINANCE_API_SECRET", "")),
+            "news_api_key": mask_secret(os.getenv("NEWS_API_KEY", "")),
+            "twelvedata_api_key": mask_secret(os.getenv("TWELVEDATA_API_KEY", "")),
+            "finnhub_api_key": mask_secret(os.getenv("FINNHUB_API_KEY", "")),
         },
         "feature_flags": FEATURE_FLAGS,
         "circuit_breaker": cb_manager.breakers,
@@ -1101,17 +1038,12 @@ async def update_risk(req: RiskRequest):
         "riskPct": req.riskPct
     }
     
-    df = ticker_data.get(current_symbol)
-    if df is not None and not df.empty:
-        prices_list = df['price'].tolist()
-    else:
-        prices_list = []
-        
-    indicators = get_market_indicators(prices_list, current_symbol)
+    indicators = get_cached_indicators(current_symbol)
     from backend.engines.market_regime import regime_managers
     regime = regime_managers[current_symbol].current_regime if current_symbol in regime_managers else None
     signal = evaluate_strategy_rules(indicators, current_symbol, regime=regime)
-    
+
+    equity = await accounting.get_account_equity(latest_prices)
     risk = check_trade_risk(
         current_symbol,
         signal["action"],
@@ -1121,7 +1053,9 @@ async def update_risk(req: RiskRequest):
         req.spread,
         take_profit=req.takeProfit,
         reject_threshold=req.rejectThreshold,
-        risk_pct_limit=req.riskPct
+        risk_pct_limit=req.riskPct,
+        equity=equity,
+        broker_spread=current_spread_pips(current_symbol),
     )
     return risk
 
@@ -1146,12 +1080,7 @@ async def change_mode(req: Dict[str, str]):
 
 @app.post("/api/approve")
 async def approve_trade():
-    df = ticker_data.get(current_symbol)
-    if df is not None and not df.empty:
-        prices_list = df['price'].tolist()
-    else:
-        prices_list = []
-    indicators = get_market_indicators(prices_list, current_symbol)
+    indicators = get_cached_indicators(current_symbol)
     from backend.engines.market_regime import regime_managers
     regime = regime_managers[current_symbol].current_regime if current_symbol in regime_managers else None
     signal = evaluate_strategy_rules(indicators, current_symbol, regime=regime)
@@ -1336,80 +1265,15 @@ async def close_order_endpoint(req: CloseOrderRequest):
             action=trade.action.value if hasattr(trade.action, "value") else trade.action,
             status="CLOSED",
             lot_size=trade.lot_size,
+            entry_price=trade.entry_price or 0.0,
             exit_price=current_price,
             realized_pnl=realized_pnl,
             message="Manual Close from Dashboard"
         )
         await event_bus.publish(CH_EXEC_CLOSED, closed_event.model_dump())
-        
-        # Fire ERP Webhook
-        async def fire_erp_webhook_local(event_type: str, event_data: dict, trade_id: str):
-            erp_url = os.getenv("ERP_WEBHOOK_URL", "http://localhost:5001/webhook/trade-event")
-            erp_api_key = os.getenv("ERP_API_KEY", "")
-            erp_webhook_secret = os.getenv("ERP_WEBHOOK_SECRET", "")
-            idemp_key = str(uuid.uuid4())
-            
-            payload = {
-                "event": event_type,
-                "data": {
-                    "trade_id": trade_id,
-                    "symbol": event_data["ticker"],
-                    "action": event_data["action"],
-                    "price": event_data.get("exit_price", 0),
-                    "exit_price": event_data.get("exit_price", 0),
-                    "entry_price": trade.entry_price or 0.0,
-                    "volume": event_data["lot_size"],
-                    "lot_size": event_data["lot_size"],
-                    "pnl": event_data["realized_pnl"],
-                    "fee": 0.0
-                }
-            }
-            
-            raw_body = json.dumps(payload, separators=(',', ':'), sort_keys=False)
-            signature = ""
-            if erp_webhook_secret:
-                sig_hex = hmac.new(
-                    erp_webhook_secret.encode('utf-8'),
-                    raw_body.encode('utf-8'),
-                    hashlib.sha256
-                ).hexdigest()
-                signature = f"sha256={sig_hex}"
-                
-            db_erp = SessionLocal()
-            try:
-                record = ERPDeliveryRecord(
-                    trade_id=trade_id,
-                    idempotency_key=idemp_key,
-                    request_payload=payload
-                )
-                db_erp.add(record)
-                db_erp.commit()
-                
-                headers = {
-                    "Idempotency-Key": idemp_key,
-                    "X-Api-Key": erp_api_key,
-                    "Content-Type": "application/json"
-                }
-                if signature:
-                    headers["X-Signature"] = signature
-                    
-                async with httpx.AsyncClient() as client:
-                    resp = await client.post(
-                        erp_url,
-                        content=raw_body,
-                        headers=headers,
-                        timeout=3.0
-                    )
-                    record.response_code = resp.status_code
-                    record.response_body = resp.text
-                    record.status = "SUCCESS" if resp.status_code < 300 else "FAILED"
-                db_erp.commit()
-            except Exception as ex:
-                logger.error(f"Failed to fire ERP webhook for manual close: {ex}")
-            finally:
-                db_erp.close()
-                
-        asyncio.create_task(fire_erp_webhook_local("trade.pnl_realized", closed_event.model_dump(), trade.id))
+
+        # Fire ERP Webhook (shared util)
+        asyncio.create_task(fire_erp_webhook("trade.pnl_realized", closed_event.model_dump(), trade.id))
         
         # Publish decision journal update
         action_name = trade.action.value if hasattr(trade.action, "value") else trade.action

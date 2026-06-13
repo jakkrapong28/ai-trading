@@ -16,6 +16,7 @@ from backend.shared.database.core import SessionLocal
 from backend.shared.database.models import Trade, TradeStatus, ERPDeliveryRecord, TradeAction
 from backend.brokers.paper import PaperBroker
 from backend.engines.risk import cb_manager
+from backend.shared.webhooks import fire_erp_webhook
 
 logger = logging.getLogger("execution-engine")
 
@@ -97,7 +98,7 @@ class ExecutionEngine:
                 await self.event_bus.publish(CH_EXEC_OPENED, opened.model_dump())
                 logger.info(f"Trade {trade_id} opened. {approved.action} {approved.ticker} at {res['filled_price']:.2f}")
                 
-                asyncio.create_task(self._fire_erp_webhook("trade.opened", opened.model_dump(), trade_id))
+                asyncio.create_task(fire_erp_webhook("trade.opened", opened.model_dump(), trade_id))
                 
             except Exception as e:
                 logger.error(f"Error in Execution Engine: {e}")
@@ -122,7 +123,7 @@ class ExecutionEngine:
             )
             await self.event_bus.publish(CH_EXEC_CLOSED, closed.model_dump())
             logger.info(f"[{ticker}] Trade {trade_id} closed ({reason}) at {price:.2f}. Realized: {realized:.2f}")
-            asyncio.create_task(self._fire_erp_webhook("trade.pnl_realized", closed.model_dump(), trade_id))
+            asyncio.create_task(fire_erp_webhook("trade.pnl_realized", closed.model_dump(), trade_id))
         else:
             try:
                 res = await self.broker.partial_close_order(trade_id, close_pct, exit_price=price)
@@ -139,7 +140,7 @@ class ExecutionEngine:
                 )
                 await self.event_bus.publish(CH_EXEC_CLOSED, closed.model_dump())
                 logger.info(f"[{ticker}] Trade {trade_id} partially closed {close_pct:.1%} ({reason}) at {price:.2f}. Realized: {realized:.2f}")
-                asyncio.create_task(self._fire_erp_webhook("trade.pnl_realized", closed.model_dump(), trade_id))
+                asyncio.create_task(fire_erp_webhook("trade.pnl_realized", closed.model_dump(), trade_id))
             except Exception as e:
                 logger.warning(f"Partial close failed for {trade_id}, falling back to full close: {e}")
                 res = await self.broker.close_order(trade_id, exit_price=price)
@@ -155,7 +156,7 @@ class ExecutionEngine:
                     message=f"{reason} (Fallback from partial close error)"
                 )
                 await self.event_bus.publish(CH_EXEC_CLOSED, closed.model_dump())
-                asyncio.create_task(self._fire_erp_webhook("trade.pnl_realized", closed.model_dump(), trade_id))
+                asyncio.create_task(fire_erp_webhook("trade.pnl_realized", closed.model_dump(), trade_id))
 
     async def monitor_active_trades(self):
         logger.info("Execution Engine monitoring CH_MARKET_DATA for trade lifecycle...")
@@ -379,103 +380,6 @@ class ExecutionEngine:
                 db.close()
             except Exception as e:
                 logger.error(f"Error in process_regime_changes: {e}")
-
-    async def _fire_erp_webhook(self, event_type: str, event_data: dict, trade_id: str):
-        erp_url = os.getenv("ERP_WEBHOOK_URL", "http://localhost:5001/webhook/trade-event")
-        erp_api_key = os.getenv("ERP_API_KEY", "")
-        erp_webhook_secret = os.getenv("ERP_WEBHOOK_SECRET", "")
-        # Fail closed: never fire a webhook with a missing/placeholder secret — ERP would either
-        # reject it or (worse) accept a publicly-known default key.
-        if not erp_api_key or not erp_webhook_secret:
-            logger.error(
-                f"[ERP] Skipping webhook '{event_type}' for {trade_id}: "
-                "ERP_API_KEY / ERP_WEBHOOK_SECRET not configured in environment."
-            )
-            return
-        idemp_key = str(uuid.uuid4())
-
-        # Prepare the payload for ERP
-        if event_type == "trade.opened":
-            payload = {
-                "event": "trade.opened",
-                "data": {
-                    "trade_id": trade_id,
-                    "symbol": event_data["ticker"],
-                    "action": event_data["action"],
-                    "price": event_data["entry_price"],
-                    "volume": event_data["lot_size"],
-                    "lot_size": event_data["lot_size"]
-                }
-            }
-        elif event_type == "trade.pnl_realized":
-            payload = {
-                "event": "trade.pnl_realized",
-                "data": {
-                    "trade_id": trade_id,
-                    "symbol": event_data["ticker"],
-                    "action": event_data["action"],
-                    "price": event_data.get("exit_price", 0),
-                    "exit_price": event_data.get("exit_price", 0),
-                    "entry_price": event_data.get("entry_price", 0),
-                    "volume": event_data["lot_size"],
-                    "lot_size": event_data["lot_size"],
-                    "pnl": event_data["realized_pnl"],
-                    "fee": 0.0
-                }
-            }
-        else:
-            payload = {
-                "event": event_type,
-                "data": {**event_data, "trade_id": trade_id}
-            }
-
-        # HMAC SHA256 signature
-        raw_body = json.dumps(payload, separators=(',', ':'), sort_keys=False)
-        signature = ""
-        if erp_webhook_secret:
-            sig_hex = hmac.new(
-                erp_webhook_secret.encode('utf-8'),
-                raw_body.encode('utf-8'),
-                hashlib.sha256
-            ).hexdigest()
-            signature = f"sha256={sig_hex}"
-
-        db = SessionLocal()
-        record = ERPDeliveryRecord(
-            trade_id=trade_id,
-            idempotency_key=idemp_key,
-            request_payload=payload
-        )
-        db.add(record)
-        db.commit()
-
-        headers = {
-            "Idempotency-Key": idemp_key,
-            "X-Api-Key": erp_api_key,
-            "Content-Type": "application/json"
-        }
-        if signature:
-            headers["X-Signature"] = signature
-
-        try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.post(
-                    erp_url,
-                    content=raw_body,
-                    headers=headers,
-                    timeout=3.0
-                )
-                record.response_code = resp.status_code
-                record.response_body = resp.text
-                record.status = "SUCCESS" if resp.status_code < 300 else "FAILED"
-                logger.debug(f"[ERP] Webhook {event_type} → {resp.status_code}")
-        except Exception as e:
-            record.status = "ERROR"
-            record.response_body = str(e)
-            logger.debug(f"ERP Webhook failed (expected if ERP offline): {e}")
-
-        db.commit()
-        db.close()
 
 def start_execution_engine(event_bus: EventBus):
     from backend.shared.tasks import registry

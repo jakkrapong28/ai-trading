@@ -1,16 +1,21 @@
 "use client";
 
+import { useState } from "react";
 import { SYMBOLS_LIST } from "@/config/dashboard";
 import TradingViewWidget from "@/components/TradingViewWidget";
+import AIChartWidget from "@/components/AIChartWidget";
+import AIAnalysisPanel from "@/components/AIAnalysisPanel";
 import { useDashboard } from "@/context/DashboardContext";
 
 export default function TradingPage() {
-  const { symbol, latestPrice, priceMap, indicators, signal, risk, mode, balances, orders, activeTab, setActiveTab, signalActivity, ledger, taxSummary, riskForm, setRiskForm, newsFeed, closedOrders, todayPnLSum, pnlPct, handleCloseOrder, handleSymbolChange, handleRiskTest, handleToggleMode, handleApprove, handleReject } = useDashboard();
+  const { symbol, latestPrice, priceMap, indicators, signal, risk, mode, balances, orders, activeTab, setActiveTab, signalActivity, ledger, riskForm, setRiskForm, newsFeed, closedOrders, todayPnLSum, pnlPct, handleCloseOrder, handleSymbolChange, handleRiskTest, handleToggleMode, handleApprove, handleReject } = useDashboard();
+  const [chartMode, setChartMode] = useState<"ai" | "tv">("ai");
+  const [tf, setTf] = useState<"M15" | "H1" | "H4" | "D1">("H1");
   return (
       <div className={`flex-1 flex flex-col p-4 gap-4 bg-[#000000] overflow-y-auto`}>
             
         {/* ── ROW 1: CANDLESTICK CHART ── */}
-        <div className="bg-[#070a0f] border border-[#1e2d45] rounded-xl p-3 flex flex-col gap-2.5 h-[360px] min-h-[360px] shadow-lg">
+        <div className="bg-[#070a0f] border border-[#26262b] rounded-xl p-3 flex flex-col gap-2.5 h-[360px] min-h-[360px] shadow-lg">
           {/* Chart Header */}
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
@@ -23,7 +28,7 @@ export default function TradingPage() {
                   {SYMBOLS_LIST.find(s => s.symbol === symbol)?.name || "Binance Asset"}
                 </span>
               </div>
-              <div className="h-6 w-[1px] bg-[#1e2d45]" />
+              <div className="h-6 w-[1px] bg-[#26262b]" />
               <div className="flex flex-col">
                 <span className="text-[14px] font-black text-white font-mono leading-none">
                   {latestPrice ? latestPrice.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}) : "-"}
@@ -49,16 +54,25 @@ export default function TradingPage() {
           </div>
 
           {/* Chart Toolbar */}
-          <div className="flex items-center justify-between border-t border-b border-[#1e2d45]/40 py-1 text-[10.5px]">
+          <div className="flex items-center justify-between border-t border-b border-[#26262b]/40 py-1 text-[10.5px]">
             <div className="flex items-center gap-1 font-semibold text-[#7a9bbf] font-mono">
-              <span className="px-2 py-0.5 rounded hover:bg-white/5 cursor-pointer">1m</span>
-              <span className="px-2 py-0.5 rounded hover:bg-white/5 cursor-pointer">5m</span>
-              <span className="px-2 py-0.5 rounded hover:bg-white/5 cursor-pointer">15m</span>
-              <span className="px-2 py-0.5 rounded bg-[#131d27] text-white cursor-pointer">1h</span>
-              <span className="px-2 py-0.5 rounded hover:bg-white/5 cursor-pointer">4h</span>
-              <span className="px-2 py-0.5 rounded hover:bg-white/5 cursor-pointer">D</span>
-              <span className="px-2 py-0.5 rounded hover:bg-white/5 cursor-pointer">W</span>
-              <div className="w-[1px] h-3 bg-[#1e2d45] mx-1" />
+              {([
+                { label: "15m", tf: "M15" },
+                { label: "1h", tf: "H1" },
+                { label: "4h", tf: "H4" },
+                { label: "D", tf: "D1" },
+              ] as const).map(({ label, tf: t }) => (
+                <span
+                  key={label}
+                  onClick={() => setTf(t)}
+                  className={`px-2 py-0.5 rounded cursor-pointer ${
+                    tf === t ? "bg-[#131d27] text-white" : "hover:bg-white/5"
+                  }`}
+                >
+                  {label}
+                </span>
+              ))}
+              <div className="w-[1px] h-3 bg-[#26262b] mx-1" />
               <span className="px-2 py-0.5 rounded hover:bg-white/5 cursor-pointer flex items-center gap-1 text-[#22d3ee]">
                 📊 Indicators
               </span>
@@ -66,18 +80,38 @@ export default function TradingPage() {
                 🔔 Alert
               </span>
             </div>
+
+            {/* Chart source toggle: our AI chart vs TradingView */}
+            <div className="flex items-center gap-1 bg-[#0b0f16] border border-[#26262b] rounded-md p-0.5">
+              <button
+                onClick={() => setChartMode("ai")}
+                className={`px-2.5 py-0.5 rounded text-[10px] font-bold font-mono transition ${
+                  chartMode === "ai" ? "bg-[#10b981]/20 text-[#10b981]" : "text-[#5c7a9c] hover:text-white"
+                }`}
+              >
+                AI Chart
+              </button>
+              <button
+                onClick={() => setChartMode("tv")}
+                className={`px-2.5 py-0.5 rounded text-[10px] font-bold font-mono transition ${
+                  chartMode === "tv" ? "bg-[#22d3ee]/15 text-[#22d3ee]" : "text-[#5c7a9c] hover:text-white"
+                }`}
+              >
+                TradingView
+              </button>
+            </div>
           </div>
 
-          {/* Chart Iframe Container */}
-          <div className="flex-1 rounded-lg overflow-hidden border border-[#1e2d45]/50 relative">
-            <TradingViewWidget symbol={symbol} />
+          {/* Chart Container — AI chart (our data + AI lines) or TradingView embed */}
+          <div className="flex-1 rounded-lg overflow-hidden border border-[#26262b]/50 relative">
+            {chartMode === "ai" ? <AIChartWidget symbol={symbol} tf={tf} /> : <TradingViewWidget symbol={symbol} />}
           </div>
         </div>
 
         {/* ── ROW 2: WORKFORCE AGENTS ── */}
         <div className="grid grid-cols-6 gap-3">
           {/* Risk AI */}
-          <div className="bg-[#070a0f] border border-[#1e2d45] rounded-xl p-3 flex flex-col justify-between h-[85px] shadow-sm relative group hover:border-[#ef4444]/30 transition">
+          <div className="bg-[#070a0f] border border-[#26262b] rounded-xl p-3 flex flex-col justify-between h-[85px] shadow-sm relative group hover:border-[#ef4444]/30 transition">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-1.5">
                 <span className="text-[14px]">🛡️</span>
@@ -100,7 +134,7 @@ export default function TradingPage() {
           </div>
 
           {/* Strategy AI */}
-          <div className="bg-[#070a0f] border border-[#1e2d45] rounded-xl p-3 flex flex-col justify-between h-[85px] shadow-sm relative group hover:border-[#fbbf24]/30 transition">
+          <div className="bg-[#070a0f] border border-[#26262b] rounded-xl p-3 flex flex-col justify-between h-[85px] shadow-sm relative group hover:border-[#fbbf24]/30 transition">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-1.5">
                 <span className="text-[14px]">🎯</span>
@@ -123,7 +157,7 @@ export default function TradingPage() {
           </div>
 
           {/* EA Bot */}
-          <div className="bg-[#070a0f] border border-[#1e2d45] rounded-xl p-3 flex flex-col justify-between h-[85px] shadow-sm relative group hover:border-[#818cf8]/30 transition">
+          <div className="bg-[#070a0f] border border-[#26262b] rounded-xl p-3 flex flex-col justify-between h-[85px] shadow-sm relative group hover:border-[#818cf8]/30 transition">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-1.5">
                 <span className="text-[14px]">🤖</span>
@@ -148,7 +182,7 @@ export default function TradingPage() {
           </div>
 
           {/* Finance AI */}
-          <div className="bg-[#070a0f] border border-[#1e2d45] rounded-xl p-3 flex flex-col justify-between h-[85px] shadow-sm relative group hover:border-[#06b6d4]/30 transition">
+          <div className="bg-[#070a0f] border border-[#26262b] rounded-xl p-3 flex flex-col justify-between h-[85px] shadow-sm relative group hover:border-[#06b6d4]/30 transition">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-1.5">
                 <span className="text-[14px]">💰</span>
@@ -173,7 +207,7 @@ export default function TradingPage() {
           </div>
 
           {/* Audit AI */}
-          <div className="bg-[#070a0f] border border-[#1e2d45] rounded-xl p-3 flex flex-col justify-between h-[85px] shadow-sm relative group hover:border-[#a855f7]/30 transition">
+          <div className="bg-[#070a0f] border border-[#26262b] rounded-xl p-3 flex flex-col justify-between h-[85px] shadow-sm relative group hover:border-[#a855f7]/30 transition">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-1.5">
                 <span className="text-[14px]">🔍</span>
@@ -196,7 +230,7 @@ export default function TradingPage() {
           </div>
 
           {/* CEO Agent */}
-          <div className="bg-[#070a0f] border border-[#1e2d45] rounded-xl p-3 flex flex-col justify-between h-[85px] shadow-sm relative group hover:border-[#10b981]/30 transition">
+          <div className="bg-[#070a0f] border border-[#26262b] rounded-xl p-3 flex flex-col justify-between h-[85px] shadow-sm relative group hover:border-[#10b981]/30 transition">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-1.5">
                 <span className="text-[14px]">🕴️</span>
@@ -222,10 +256,10 @@ export default function TradingPage() {
         {/* ── ROW 3: POSITIONS TABS & RISK GATE ── */}
         <div className="flex gap-4">
           {/* Tabbed Positions Table (Left) */}
-          <div className="flex-1 bg-[#070a0f] border border-[#1e2d45] rounded-xl p-3.5 shadow-lg flex flex-col h-[280px] min-h-[280px]">
+          <div className="flex-1 bg-[#070a0f] border border-[#26262b] rounded-xl p-3.5 shadow-lg flex flex-col h-[280px] min-h-[280px]">
             {/* Tab selector */}
-            <div className="flex gap-5 border-b border-[#1e2d45]/40 pb-2 text-[11px] font-bold text-[#7a9bbf] font-mono cursor-pointer">
-              {["POSITIONS", "ORDERS", "PORTFOLIO", "SIGNALS", "ALERTS"].map((tab) => {
+            <div className="flex gap-5 border-b border-[#26262b]/40 pb-2 text-[11px] font-bold text-[#7a9bbf] font-mono cursor-pointer">
+              {["POSITIONS", "ORDERS", "PORTFOLIO", "SIGNALS", "ALERTS", "AI ANALYSIS"].map((tab) => {
                 const isTabActive = tab === activeTab;
                 return (
                   <span 
@@ -244,7 +278,7 @@ export default function TradingPage() {
               {activeTab === "POSITIONS" && (
                 <table className="w-full text-left text-[10.5px] font-mono">
                   <thead>
-                    <tr className="text-[#5c7a9c] border-b border-[#1e2d45]/30">
+                    <tr className="text-[#5c7a9c] border-b border-[#26262b]/30">
                       <th className="py-2">Symbol</th>
                       <th className="py-2">Side</th>
                       <th className="py-2">Size</th>
@@ -256,7 +290,7 @@ export default function TradingPage() {
                       <th className="py-2 text-center">Actions</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-[#1e2d45]/20 text-white">
+                  <tbody className="divide-y divide-[#26262b]/20 text-white">
                     {(() => {
                       const openOrders = (orders || []).filter(o => o.status === "OPEN" || o.status === "PENDING");
                       if (openOrders.length === 0) {
@@ -310,7 +344,7 @@ export default function TradingPage() {
               {activeTab === "ORDERS" && (
                 <table className="w-full text-left text-[10.5px] font-mono">
                   <thead>
-                    <tr className="text-[#5c7a9c] border-b border-[#1e2d45]/30">
+                    <tr className="text-[#5c7a9c] border-b border-[#26262b]/30">
                       <th className="py-2">ID</th>
                       <th className="py-2">Symbol</th>
                       <th className="py-2">Side</th>
@@ -321,7 +355,7 @@ export default function TradingPage() {
                       <th className="py-2">Status</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-[#1e2d45]/20 text-white">
+                  <tbody className="divide-y divide-[#26262b]/20 text-white">
                     {orders.length === 0 ? (
                       <tr>
                         <td colSpan={8} className="py-8 text-center text-slate-500 text-[10px]">
@@ -348,7 +382,7 @@ export default function TradingPage() {
                           </td>
                           <td className="py-2">
                             <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${
-                              ord.status === "CLOSED" ? "bg-[#1e2d45] text-[#7a9bbf]" : "bg-emerald-950 text-emerald-400"
+                              ord.status === "CLOSED" ? "bg-[#26262b] text-[#7a9bbf]" : "bg-emerald-950 text-emerald-400"
                             }`}>
                               {ord.status}
                             </span>
@@ -363,7 +397,7 @@ export default function TradingPage() {
               {activeTab === "PORTFOLIO" && (
                 <table className="w-full text-left text-[10.5px] font-mono">
                   <thead>
-                    <tr className="text-[#5c7a9c] border-b border-[#1e2d45]/30">
+                    <tr className="text-[#5c7a9c] border-b border-[#26262b]/30">
                       <th className="py-2">Source</th>
                       <th className="py-2">Equity</th>
                       <th className="py-2">Balance</th>
@@ -371,7 +405,7 @@ export default function TradingPage() {
                       <th className="py-2">Status</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-[#1e2d45]/20 text-white">
+                  <tbody className="divide-y divide-[#26262b]/20 text-white">
                     {balances.length === 0 ? (
                       <tr>
                         <td colSpan={5} className="py-8 text-center text-slate-500 text-[10px]">
@@ -398,7 +432,7 @@ export default function TradingPage() {
               {activeTab === "SIGNALS" && (
                 <table className="w-full text-left text-[10.5px] font-mono">
                   <thead>
-                    <tr className="text-[#5c7a9c] border-b border-[#1e2d45]/30">
+                    <tr className="text-[#5c7a9c] border-b border-[#26262b]/30">
                       <th className="py-2">Symbol</th>
                       <th className="py-2">Action</th>
                       <th className="py-2">Status</th>
@@ -406,7 +440,7 @@ export default function TradingPage() {
                       <th className="py-2 text-right">Time</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-[#1e2d45]/20 text-white">
+                  <tbody className="divide-y divide-[#26262b]/20 text-white">
                     {signalActivity.length === 0 ? (
                       <tr>
                         <td colSpan={5} className="py-8 text-center text-slate-500 text-[10px]">
@@ -444,14 +478,14 @@ export default function TradingPage() {
               {activeTab === "ALERTS" && (
                 <table className="w-full text-left text-[10.5px] font-mono">
                   <thead>
-                    <tr className="text-[#5c7a9c] border-b border-[#1e2d45]/30">
+                    <tr className="text-[#5c7a9c] border-b border-[#26262b]/30">
                       <th className="py-2">Time</th>
                       <th className="py-2">Source</th>
                       <th className="py-2">Summary</th>
                       <th className="py-2">Impact</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-[#1e2d45]/20 text-white">
+                  <tbody className="divide-y divide-[#26262b]/20 text-white">
                     {newsFeed.length === 0 ? (
                       <tr>
                         <td colSpan={4} className="py-8 text-center text-slate-500 text-[10px]">
@@ -477,11 +511,15 @@ export default function TradingPage() {
                   </tbody>
                 </table>
               )}
+
+              {activeTab === "AI ANALYSIS" && (
+                <AIAnalysisPanel indicators={indicators} signal={signal} />
+              )}
             </div>
           </div>
 
           {/* RISK GATE (Right) */}
-          <div className="w-[360px] bg-[#070a0f] border border-[#1e2d45] rounded-xl p-3.5 shadow-lg flex flex-col h-[280px] min-h-[280px] justify-between">
+          <div className="w-[360px] bg-[#070a0f] border border-[#26262b] rounded-xl p-3.5 shadow-lg flex flex-col h-[280px] min-h-[280px] justify-between">
                 
             {/* แถวบน: Title + Auto Scan */}
             <div className="flex items-center justify-between">
@@ -498,7 +536,7 @@ export default function TradingPage() {
                   className={`px-2 py-1 text-[9px] font-bold rounded-full border transition flex items-center gap-1 ${
                     mode === "auto"
                       ? "bg-[#0d2a3a]/80 text-[#22d3ee] border-[#1a5a7a] shadow-[0_0_8px_#22d3ee44]"
-                      : "bg-[#111827] text-[#7a9bbf] border-[#1e2d45] hover:bg-[#1e2d45] hover:text-[#c8d8f0]"
+                      : "bg-[#111827] text-[#7a9bbf] border-[#26262b] hover:bg-[#26262b] hover:text-[#c8d8f0]"
                   }`}
                 >
                   <span className={`w-1 h-1 rounded-full ${mode === "auto" ? "bg-[#22d3ee] shadow-[0_0_4px_#22d3ee]" : "bg-[#64748b]"}`} />
@@ -508,22 +546,22 @@ export default function TradingPage() {
             </div>
 
             {/* Indicators Row */}
-            <div className="flex gap-2 text-center text-[10px] bg-[#000000]/40 border border-[#1e2d45] px-2.5 py-1.5 rounded-lg font-mono items-center justify-around">
+            <div className="flex gap-2 text-center text-[10px] bg-[#000000]/40 border border-[#26262b] px-2.5 py-1.5 rounded-lg font-mono items-center justify-around">
               <div>
                 <span className="text-[#5c7a9c] text-[8px] font-medium leading-none">ราคา</span>
                 <div className="font-bold text-white mt-0.5 text-[9.5px]">{latestPrice ? latestPrice.toLocaleString() : "-"}</div>
               </div>
-              <div className="w-[1px] h-3.5 bg-[#1e2d45]" />
+              <div className="w-[1px] h-3.5 bg-[#26262b]" />
               <div>
                 <span className="text-[#5c7a9c] text-[8px] font-medium leading-none">EMA</span>
                 <div className={`font-bold mt-0.5 text-[9.5px] ${indicators?.trend === "Bullish" ? "text-[#10b981]" : indicators?.trend === "Bearish" ? "text-[#f87171]" : "text-[#fbbf24]"}`}>{indicators?.trend || "-"}</div>
               </div>
-              <div className="w-[1px] h-3.5 bg-[#1e2d45]" />
+              <div className="w-[1px] h-3.5 bg-[#26262b]" />
               <div>
                 <span className="text-[#5c7a9c] text-[8px] font-medium leading-none">RSI</span>
                 <div className="font-bold text-white mt-0.5 text-[9.5px]">{indicators?.rsi || "-"}</div>
               </div>
-              <div className="w-[1px] h-3.5 bg-[#1e2d45]" />
+              <div className="w-[1px] h-3.5 bg-[#26262b]" />
               <div>
                 <span className="text-[#5c7a9c] text-[8px] font-medium leading-none">Signal</span>
                 <div className={`font-bold mt-0.5 text-[9.5px] ${signal?.action === "BUY" ? "text-[#10b981]" : signal?.action === "SELL" ? "text-[#f87171]" : "text-slate-400"}`}>{signal?.action || "WAIT"}</div>
@@ -531,13 +569,13 @@ export default function TradingPage() {
             </div>
 
             {/* Parameters block */}
-            <div className="grid grid-cols-3 gap-2 text-[9px] font-mono border-t border-[#1e2d45]/40 pt-2">
+            <div className="grid grid-cols-3 gap-2 text-[9px] font-mono border-t border-[#26262b]/40 pt-2">
               <div>
                 <span className="text-[#5c7a9c] block text-[8px] font-medium mb-0.5">คู่เหรียญ</span>
                 <select
                   value={symbol}
                   onChange={(e) => handleSymbolChange(e.target.value)}
-                  className="bg-[#000000] border border-[#1e2d45] rounded text-[10px] text-white px-1 py-0.5 outline-none font-mono font-bold w-full h-[22px] cursor-pointer"
+                  className="bg-[#000000] border border-[#26262b] rounded text-[10px] text-white px-1 py-0.5 outline-none font-mono font-bold w-full h-[22px] cursor-pointer"
                 >
                   {SYMBOLS_LIST.map((s) => (
                     <option key={s.symbol} value={s.symbol}>{s.symbol}</option>
@@ -548,41 +586,41 @@ export default function TradingPage() {
                 <span className="text-[#5c7a9c] block text-[8px] font-medium mb-0.5">Lot</span>
                 <input type="number" step="0.01" value={riskForm.lot}
                   onChange={(e) => setRiskForm({...riskForm, lot: Number(e.target.value)})}
-                  className="w-full bg-[#000000] border border-[#1e2d45] rounded px-1 py-0.5 text-white font-bold text-center text-[10px] h-[22px] outline-none focus:border-[#3b82f6]"
+                  className="w-full bg-[#000000] border border-[#26262b] rounded px-1 py-0.5 text-white font-bold text-center text-[10px] h-[22px] outline-none focus:border-[#3b82f6]"
                 />
               </div>
               <div>
                 <span className="text-[#5c7a9c] block text-[8px] font-medium mb-0.5">SL (Pips)</span>
                 <input type="number" value={riskForm.stopDistance}
                   onChange={(e) => setRiskForm({...riskForm, stopDistance: Number(e.target.value)})}
-                  className="w-full bg-[#000000] border border-[#1e2d45] rounded px-1 py-0.5 text-white font-bold text-center text-[10px] h-[22px] outline-none focus:border-[#3b82f6]"
+                  className="w-full bg-[#000000] border border-[#26262b] rounded px-1 py-0.5 text-white font-bold text-center text-[10px] h-[22px] outline-none focus:border-[#3b82f6]"
                 />
               </div>
               <div>
                 <span className="text-[#5c7a9c] block text-[8px] font-medium mb-0.5">TP (Pips)</span>
                 <input type="number" value={riskForm.takeProfit}
                   onChange={(e) => setRiskForm({...riskForm, takeProfit: Number(e.target.value)})}
-                  className="w-full bg-[#000000] border border-[#1e2d45] rounded px-1 py-0.5 text-white font-bold text-center text-[10px] h-[22px] outline-none focus:border-[#3b82f6]"
+                  className="w-full bg-[#000000] border border-[#26262b] rounded px-1 py-0.5 text-white font-bold text-center text-[10px] h-[22px] outline-none focus:border-[#3b82f6]"
                 />
               </div>
               <div>
                 <span className="text-[#5c7a9c] block text-[8px] font-medium mb-0.5">Spread Limit</span>
                 <input type="number" step="0.1" value={riskForm.spread}
                   onChange={(e) => setRiskForm({...riskForm, spread: Number(e.target.value)})}
-                  className="w-full bg-[#000000] border border-[#1e2d45] rounded px-1 py-0.5 text-white font-bold text-center text-[10px] h-[22px] outline-none focus:border-[#3b82f6]"
+                  className="w-full bg-[#000000] border border-[#26262b] rounded px-1 py-0.5 text-white font-bold text-center text-[10px] h-[22px] outline-none focus:border-[#3b82f6]"
                 />
               </div>
               <div>
                 <span className="text-[#5c7a9c] block text-[8px] font-medium mb-0.5">Risk %</span>
                 <input type="number" step="0.1" value={riskForm.riskPct}
                   onChange={(e) => setRiskForm({...riskForm, riskPct: Number(e.target.value)})}
-                  className="w-full bg-[#000000] border border-[#1e2d45] rounded px-1 py-0.5 text-white font-bold text-center text-[10px] h-[22px] outline-none focus:border-[#3b82f6]"
+                  className="w-full bg-[#000000] border border-[#26262b] rounded px-1 py-0.5 text-white font-bold text-center text-[10px] h-[22px] outline-none focus:border-[#3b82f6]"
                 />
               </div>
             </div>
 
             {/* Actions row */}
-            <div className="flex items-center gap-1.5 border-t border-[#1e2d45]/40 pt-2 justify-between">
+            <div className="flex items-center gap-1.5 border-t border-[#26262b]/40 pt-2 justify-between">
               <button onClick={handleRiskTest} className="px-2.5 py-1 bg-[#161f30] hover:bg-[#202d44] text-[9.5px] font-bold text-[#c8d8f0] rounded border border-[#243352] transition flex items-center gap-1 h-6">
                 ประเมิน
               </button>
@@ -597,7 +635,7 @@ export default function TradingPage() {
               <button
                 onClick={handleApprove}
                 disabled={mode === "auto" || !signal || (signal.action !== "BUY" && signal.action !== "SELL")}
-                className="px-3.5 py-1 bg-[#0e3a1f] hover:bg-[#14532d] disabled:bg-[#111520] disabled:text-[#3d5a7a] border border-[#166534] disabled:border-[#1e2d45] text-[#10b981] disabled:text-[#3d5a7a] text-[10px] font-bold rounded transition flex items-center gap-1.5 h-7"
+                className="px-3.5 py-1 bg-[#0e3a1f] hover:bg-[#14532d] disabled:bg-[#111520] disabled:text-[#3d5a7a] border border-[#166534] disabled:border-[#26262b] text-[#10b981] disabled:text-[#3d5a7a] text-[10px] font-bold rounded transition flex items-center gap-1.5 h-7"
               >
                 <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5"><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
                 อนุมัติ
@@ -612,47 +650,6 @@ export default function TradingPage() {
             </div>
           </div>
 
-        </div>
-
-        {/* ── Top-Right: ERP Mini Widget ── */}
-        <div className="absolute right-3 top-3 w-[200px] bg-[#070b11]/90 border border-[#1e2d45] rounded-xl p-3.5 shadow-2xl backdrop-blur-md">
-          <div className="flex justify-between items-center border-b border-[#1e2d45] pb-2 mb-2">
-            <div className="text-[11px] text-white font-extrabold tracking-wider font-mono">TEAM ERP</div>
-            <div className="text-[8px] bg-emerald-950/80 border border-emerald-500/30 text-[#10b981] px-1.5 py-0.2 rounded-full font-bold uppercase tracking-wide">Live</div>
-          </div>
-              
-          {taxSummary ? (
-            <div className="text-[10px] space-y-1.5 font-mono">
-              <div className="flex justify-between">
-                <span className="text-[#5c7a9c] font-medium">PnL</span>
-                <span className="text-[#10b981] font-bold">${taxSummary.accumulatedPnL.toFixed(2)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-[#5c7a9c] font-medium">VAT ค้าง</span>
-                <span className="text-[#10b981] font-bold">+${taxSummary.inputVatClaimable.toFixed(2)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-[#5c7a9c] font-medium">ภาษี</span>
-                <span className="text-[#ef4444] font-bold">-${taxSummary.estimatedIncomeTax.toFixed(2)}</span>
-              </div>
-              <div className="flex justify-between border-b border-[#1e2d45]/50 pb-2">
-                <span className="text-[#5c7a9c] font-medium">พอร์ต</span>
-                <span className="text-[#10b981] font-bold">${taxSummary.netAfterTax.toFixed(2)}</span>
-              </div>
-            </div>
-          ) : (
-            <div className="text-[10px] text-slate-500 text-center py-2 font-mono">Loading ERP...</div>
-          )}
-              
-          <div className="mt-2 font-mono">
-            <div className="text-[9px] text-[#5c7a9c] font-medium">สถานะระบบ</div>
-            <div className="text-[10px] text-white font-bold mt-0.5">ERP Ledger</div>
-                
-            <div className="flex justify-between text-[10px] font-bold mt-2 pt-2 border-t border-[#1e2d45]/50">
-              <span className="text-[#10b981]">Dr: ${ledger.length > 0 ? ledger[ledger.length - 1].debit.amount.toLocaleString() : "0"}</span>
-              <span className="text-[#fbbf24]">Cr: ${ledger.length > 0 ? ledger[ledger.length - 1].credit.amount.toLocaleString() : "0"}</span>
-            </div>
-          </div>
         </div>
       </div>
   );

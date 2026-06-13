@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Office · Mission Control</title>
+<style>
+  :root { --bg:#02040a; --ink:#dce6f5; --muted:#5c7a9c; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  html,body{height:100%;}
+  body{
+    background: radial-gradient(120% 90% at 50% 45%, rgba(37,99,235,.10), transparent 60%), var(--bg);
+    color:var(--ink); font-family: ui-monospace,"SF Mono",Menlo,monospace; overflow:hidden; height:100vh;
+  }
+  .hud{position:fixed; left:24px; top:20px; z-index:5;}
+  .hud h1{font-size:13px; letter-spacing:.18em; font-weight:800;}
+  .hud p{font-size:10px; color:var(--muted); margin-top:4px;}
+  .legend{position:fixed; right:24px; top:20px; text-align:right; font-size:10px; color:var(--muted); line-height:1.7; z-index:5;}
+  .legend b{color:var(--ink);}
+  svg{width:100vw; height:100vh; display:block;}
+  .ring{fill:none; stroke:rgba(255,255,255,.06);}
+  .ringTick{stroke:rgba(255,255,255,.10);}
+  @keyframes spin{to{transform:rotate(360deg);}}
+  @keyframes ping{0%{opacity:.7; r:8}70%{opacity:0; r:26}100%{opacity:0; r:26}}
+  @keyframes blink{0%,100%{opacity:1}50%{opacity:.35}}
+</style>
+</head>
+<body>
+  <div class="hud"><h1>AI TRADING OFFICE</h1><p>Mission Control · ศูนย์บัญชาการ — CEO เป็นแกน สแกนทุกแผนกสด</p></div>
+  <div class="legend">
+    <div><b>●</b> online &nbsp; <b style="color:#fbbf24">●</b> processing &nbsp; <b style="color:#ef4444">●</b> risk</div>
+    <div>วงใน = ฝ่ายปฏิบัติการหลัก · วงนอก = ฝ่ายสนับสนุน</div>
+  </div>
+  <svg id="stage" viewBox="0 0 1200 800" preserveAspectRatio="xMidYMid meet">
+    <defs>
+      <filter id="g" x="-90%" y="-90%" width="280%" height="280%"><feGaussianBlur stdDeviation="4" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+      <radialGradient id="sweep" cx="50%" cy="50%" r="50%">
+        <stop offset="0%" stop-color="rgba(52,211,153,.30)"/><stop offset="70%" stop-color="rgba(52,211,153,.05)"/><stop offset="100%" stop-color="transparent"/>
+      </radialGradient>
+      <radialGradient id="core" cx="50%" cy="40%" r="60%"><stop offset="0%" stop-color="#10241c"/><stop offset="100%" stop-color="#04140d"/></radialGradient>
+    </defs>
+    <g id="rings"></g>
+    <g id="sweepG" style="transform-origin:600px 400px; animation:spin 8s linear infinite">
+      <path d="M600 400 L600 60 A340 340 0 0 1 894 230 Z" fill="url(#sweep)"/>
+    </g>
+    <g id="links"></g>
+    <g id="nodes"></g>
+    <g id="coreG"></g>
+  </svg>
+<script>
+const CX=600, CY=400, NS="http://www.w3.org/2000/svg";
+const el=(t,a)=>{const e=document.createElementNS(NS,t);for(const k in a)e.setAttribute(k,a[k]);return e;};
+const pol=(r,deg)=>[CX+r*Math.cos(deg*Math.PI/180), CY+r*Math.sin(deg*Math.PI/180)];
+
+const NODES=[
+  // inner ring (core ops) r=200
+  {name:"EA Bot",sub:"ฝ่ายอัลกอริทึม",   r:200,a:-90,c:"#818cf8",load:.62},
+  {name:"Chart AI",sub:"วิเคราะห์กราฟ",   r:200,a:0,  c:"#34d399",load:.78},
+  {name:"Risk AI",sub:"ควบคุมความเสี่ยง", r:200,a:90, c:"#ef4444",load:.41},
+  {name:"Strategy AI",sub:"กลยุทธ์การลงทุน",r:200,a:180,c:"#fbbf24",load:.70},
+  // outer ring (support) r=340
+  {name:"Audit AI",sub:"ฝ่ายตรวจสอบ",     r:340,a:-45,c:"#34d399",load:.55},
+  {name:"Report AI",sub:"ฝ่ายเขียนรายงาน",r:340,a:-135,c:"#34d399",load:.48},
+  {name:"Alert AI",sub:"แจ้งเตือนภัยพอร์ต",r:340,a:135,c:"#fbbf24",load:.60},
+  {name:"Finance AI",sub:"ฝ่ายการเงิน ERP",r:340,a:45, c:"#34d399",load:.52},
+];
+
+// concentric rings + ticks
+const rings=document.getElementById("rings");
+[110,200,340].forEach(r=>rings.appendChild(el("circle",{cx:CX,cy:CY,r,class:"ring"})));
+for(let d=0; d<360; d+=15){const [x1,y1]=pol(332,d),[x2,y2]=pol(348,d);rings.appendChild(el("line",{x1,y1,x2,y2,class:"ringTick"}));}
+
+// links from core to each node
+const links=document.getElementById("links");
+NODES.forEach(n=>{const [x,y]=pol(n.r,n.a);
+  links.appendChild(el("line",{x1:CX,y1:CY,x2:x,y2:y,stroke:n.c,"stroke-opacity":.22,"stroke-width":1}));
+});
+
+// nodes as telemetry panels
+const nodesG=document.getElementById("nodes");
+NODES.forEach(n=>{
+  const [x,y]=pol(n.r,n.a);
+  const g=el("g",{transform:`translate(${x},${y})`});
+  g.appendChild(el("circle",{r:5,fill:n.c,filter:"url(#g)"}));
+  const ping=el("circle",{r:8,fill:"none",stroke:n.c}); ping.style.animation="ping 2.4s ease-out infinite"; g.appendChild(ping);
+  const w=150,h=46, px = x<CX? -w-16 : 16, py=-h/2;
+  g.appendChild(el("rect",{x:px,y:py,width:w,height:h,rx:9,fill:"rgba(7,11,20,.9)",stroke:n.c,"stroke-opacity":.5}));
+  const tx=px+12;
+  const t1=el("text",{x:tx,y:py+18,fill:"#dce6f5","font-size":12,"font-weight":700}); t1.textContent=n.name; g.appendChild(t1);
+  const t2=el("text",{x:tx,y:py+31,fill:"#5c7a9c","font-size":9.5}); t2.textContent=n.sub; g.appendChild(t2);
+  // load bar
+  g.appendChild(el("rect",{x:tx,y:py+36,width:w-24,height:3,rx:1.5,fill:"rgba(255,255,255,.08)"}));
+  g.appendChild(el("rect",{x:tx,y:py+36,width:(w-24)*n.load,height:3,rx:1.5,fill:n.c}));
+  const sd=el("circle",{cx:px+w-12,cy:py+13,r:3,fill:n.c}); sd.style.animation="blink 1.8s infinite"; g.appendChild(sd);
+  nodesG.appendChild(g);
+});
+
+// CEO core
+const coreG=document.getElementById("coreG");
+coreG.appendChild(el("circle",{cx:CX,cy:CY,r:62,fill:"url(#core)",stroke:"#34d399","stroke-opacity":.6}));
+const pr=el("circle",{cx:CX,cy:CY,r:62,fill:"none",stroke:"#34d399"}); pr.style.animation="ping 3s ease-out infinite"; coreG.appendChild(pr);
+const c1=el("text",{x:CX,y:CY-4,"text-anchor":"middle",fill:"#dce6f5","font-size":15,"font-weight":800}); c1.textContent="★ CEO"; coreG.appendChild(c1);
+const c2=el("text",{x:CX,y:CY+13,"text-anchor":"middle",fill:"#34d399","font-size":10}); c2.textContent="ผู้บัญชาการ"; coreG.appendChild(c2);
+const c3=el("text",{x:CX,y:CY+30,"text-anchor":"middle",fill:"#5c7a9c","font-size":9}); c3.textContent="8 หน่วยออนไลน์"; coreG.appendChild(c3);
+</script>
+</body>
+</html>

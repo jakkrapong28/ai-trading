@@ -12,7 +12,7 @@ interface ReportsTabProps {
 const ReportsTab = ({ active, ledger, taxSummary, onResetData }: ReportsTabProps) => {
   return (
     <div className={`flex-1 overflow-y-auto p-6 md:p-8 bg-[#000000] space-y-6 ${active ? "block" : "hidden"}`}>
-      <div className="border-b border-[#1e2d45] pb-4 flex justify-between items-center flex-wrap gap-4">
+      <div className="border-b border-[#26262b] pb-4 flex justify-between items-center flex-wrap gap-4">
         <div>
           <h2 className="text-xl font-bold text-white">📊 รายงานบัญชีและระเบียบภาษีคลัง (Team ERP Ledger & Tax Sheet)</h2>
           <p className="text-xs text-[#7a9bbf] mt-1">สมุดรายการเดบิต/เครดิต และประมาณการการชำระภาษีสะสมในไทย</p>

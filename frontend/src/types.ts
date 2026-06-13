@@ -15,11 +15,25 @@ export interface Indicator {
   trend: string;
   support: number;
   resistance: number;
+  // Extended fields returned by /api/state (optional for backward-compat).
+  atr_source?: string;
+  ema_fast?: number;
+  ema_slow?: number;
+  macd?: { macd: number; signal: number; histogram: number; prev_histogram?: number };
+  bollinger?: { upper: number; middle: number; lower: number; width: number };
+  volume?: { current: number; avg_20: number; ratio: number };
 }
 
 export interface Signal {
   action: string;
   reason: string;
+  confidence?: number;
+  strategy_type?: string;
+  buy_score?: number;
+  sell_score?: number;
+  confirmations?: string[];
+  statistical_score?: number;
+  mtf_blocked?: boolean;
 }
 
 export interface RiskCheck {

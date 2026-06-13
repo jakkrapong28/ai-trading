@@ -47,8 +47,8 @@ export default function Sidebar() {
   );
 
   return (
-    <aside className="w-[172px] min-w-[172px] bg-[#070a0f] border-r border-[#1e2d45] flex flex-col flex-shrink-0">
-      <div className="p-4 border-b border-[#1e2d45] flex items-center gap-2">
+    <aside className="w-[172px] min-w-[172px] bg-[#070a0f] border-r border-[#26262b] flex flex-col flex-shrink-0">
+      <div className="p-4 border-b border-[#26262b] flex items-center gap-2">
         <div className="flex-shrink-0 text-white">
           <svg className="w-6 h-6 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <path strokeLinecap="round" strokeLinejoin="round" d="M4 5a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1V5z" />
@@ -115,7 +115,7 @@ export default function Sidebar() {
       </div>
 
       <div className="mt-auto p-2">
-        <div className="border border-[#1e2d45] bg-[#070b11]/80 rounded-lg p-2.5 flex flex-col gap-1">
+        <div className="border border-[#26262b] bg-[#070b11]/80 rounded-lg p-2.5 flex flex-col gap-1">
           <div className="flex items-center gap-1.5 text-[11px] text-[#10b981] font-bold">
             <span className="w-1.5 h-1.5 rounded-full bg-[#10b981] shadow-[0_0_6px_#10b981]"></span>
             WS Connected

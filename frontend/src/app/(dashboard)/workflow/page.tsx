@@ -7,7 +7,7 @@ export default function WorkflowPage() {
   const { priceMap, mode, orders, filterDate, setFilterDate, signalActivity, setSignalActivity, handleCloseOrder } = useDashboard();
   return (
       <div className={`flex-1 overflow-y-auto p-6 md:p-8 bg-[#000000] space-y-6`}>
-        <div className="border-b border-[#1e2d45] pb-4">
+        <div className="border-b border-[#26262b] pb-4">
           <h2 className="text-xl font-bold text-white">📋 คู่มือระบบ & ประวัติธุรกรรมตามวันที่ (Workflow & Trade History)</h2>
           <p className="text-xs text-[#7a9bbf] mt-1">คู่มือการใช้งานระบบเทรดอัจฉริยะภาษาไทย และการเรียกดูประวัติการเทรดแยกตามวันเดือนปี</p>
         </div>

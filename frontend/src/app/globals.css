@@ -1,10 +1,11 @@
 @import "tailwindcss";
 
 :root {
-  --background: #090e11;
-  --foreground: #e4ebf0;
-  --card-bg: #0f171c;
-  --border-color: #1a2c35;
+  /* Pure-black base with a cool blue undertone (not teal, not bright). */
+  --background: #02040a;
+  --foreground: #dce6f5;
+  --card-bg: #070b14;
+  --border-color: #1c1c20;
   --accent-gold: #e2b714;
   --accent-green: #10b981;
   --accent-red: #ef4444;
@@ -17,9 +18,10 @@ body {
   background-color: var(--background);
   color: var(--foreground);
   font-family: var(--font-manrope), 'Inter', system-ui, -apple-system, sans-serif;
-  background-image: 
-    radial-gradient(at 0% 0%, rgba(20, 184, 166, 0.05) 0px, transparent 50%),
-    radial-gradient(at 100% 0%, rgba(226, 183, 20, 0.05) 0px, transparent 50%);
+  /* One faint blue glow at the top for depth — keeps the page reading as
+     solid black while giving the requested blue cast (no bright teal/gold). */
+  background-image:
+    radial-gradient(at 50% -8%, rgba(37, 99, 235, 0.06) 0px, transparent 55%);
   background-attachment: fixed;
   overflow-x: hidden;
 }
@@ -30,14 +32,14 @@ body {
   height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: #090e11;
+  background: #02040a;
 }
 ::-webkit-scrollbar-thumb {
-  background: #1a2c35;
+  background: #1c1c20;
   border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #27404e;
+  background: #34343a;
 }
 
 /* Glowing Animations */

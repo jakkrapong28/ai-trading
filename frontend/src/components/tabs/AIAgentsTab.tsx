@@ -4,7 +4,7 @@
 const AIAgentsTab = ({ active }: { active: boolean }) => {
   return (
     <div className={`flex-1 overflow-y-auto p-6 md:p-8 bg-[#000000] space-y-6 ${active ? "block" : "hidden"}`}>
-      <div className="border-b border-[#1e2d45] pb-4">
+      <div className="border-b border-[#26262b] pb-4">
         <h2 className="text-xl font-bold text-white">🤖 บทบาทหน้าที่ทีมงาน AI (AI Trading Virtual Office Agents)</h2>
         <p className="text-xs text-[#7a9bbf] mt-1">อัปเดตบทบาทหน้าที่การทำงานของ 9 เอเจนต์หลัก ในระบบเทรดภาษาไทยอย่างถูกต้อง</p>
       </div>

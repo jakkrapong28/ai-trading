@@ -7,23 +7,23 @@ export default function RiskPage() {
   const { orders, featureFlags, circuitBreakers, heartbeats, nanLogs, calibration, correlationRejections, settingsForm, fetchStateData, addChatMessage } = useDashboard();
   return (
       <div className={`flex-1 overflow-y-auto p-6 md:p-8 bg-[#000000] space-y-6`}>
-        <div className="border-b border-[#1e2d45] pb-4">
+        <div className="border-b border-[#26262b] pb-4">
           <h2 className="text-xl font-bold text-white">🛡️ สรุปกฎระเบียบความเสี่ยงพอร์ต (Risk Monitor & Compliance Audit)</h2>
           <p className="text-xs text-[#7a9bbf] mt-1">มอนิเตอร์ระดับความปลอดภัย การตั้งค่ากฎเหล็ก และประวัติการทำออดิตความเสี่ยง</p>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="bg-[#111520] border border-[#1e2d45] p-4 rounded-xl text-center">
+          <div className="bg-[#111520] border border-[#26262b] p-4 rounded-xl text-center">
             <div className="text-xs text-slate-400">ขีดจำกัดความเสี่ยงไม้ (Risk Limit)</div>
             <div className="text-2xl font-bold text-[#f87171] mt-1">{settingsForm.maxRiskPerTradePct}%</div>
             <div className="text-[10px] text-slate-500 mt-1">ต่อดีลเทรดจำลอง / จริง</div>
           </div>
-          <div className="bg-[#111520] border border-[#1e2d45] p-4 rounded-xl text-center">
+          <div className="bg-[#111520] border border-[#26262b] p-4 rounded-xl text-center">
             <div className="text-xs text-slate-400">ถือครองพอร์ตรวมสูงสุด (Max Exposure)</div>
             <div className="text-2xl font-bold text-[#fbbf24] mt-1">{settingsForm.maxOpenExposurePct}%</div>
             <div className="text-[10px] text-slate-500 mt-1">ของทุนสุทธิ (Net Equity)</div>
           </div>
-          <div className="bg-[#111520] border border-[#1e2d45] p-4 rounded-xl text-center">
+          <div className="bg-[#111520] border border-[#26262b] p-4 rounded-xl text-center">
             <div className="text-xs text-slate-400">ลิมิต Drawdown ต่อวัน (Daily Loss)</div>
             <div className="text-2xl font-bold text-[#f87171] mt-1">3.00%</div>
             <div className="text-[10px] text-slate-500 mt-1">บล็อกเทรดทั้งวันทันทีหากชนลิมิต</div>
@@ -31,7 +31,7 @@ export default function RiskPage() {
         </div>
 
         {/* New Advanced Safety & Integrity Cards */}
-        <div className="border-t border-[#1e2d45] pt-6 pb-2">
+        <div className="border-t border-[#26262b] pt-6 pb-2">
           <h3 className="text-sm font-bold text-white mb-1 uppercase tracking-wider">🛠️ ระบบเฝ้าระวังความเสี่ยงขั้นสูง (Advanced Risk Surveillance)</h3>
           <p className="text-[11px] text-[#7a9bbf]">ควบคุม Feature Flags, สเตตัส Circuit Breakers และตรวจสอบความสมบูรณ์ของข้อมูลแบบเรียลไทม์</p>
         </div>
@@ -161,12 +161,12 @@ export default function RiskPage() {
         </div>
 
         {/* รายการออดิตความเสี่ยงสะสม */}
-        <div className="bg-[#111520] border border-[#1e2d45] rounded-xl p-4">
+        <div className="bg-[#111520] border border-[#26262b] rounded-xl p-4">
           <div className="text-xs text-slate-300 font-bold uppercase tracking-wider mb-3">บันทึกประวัติการทำ Risk Audit (Decision Logs)</div>
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs text-slate-300">
               <thead>
-                <tr className="border-b border-[#1e2d45] text-slate-400 font-mono">
+                <tr className="border-b border-[#26262b] text-slate-400 font-mono">
                   <th className="py-2">วัน-เวลา</th>
                   <th className="py-2">คู่สินทรัพย์</th>
                   <th className="py-2">ผลประเมิน</th>

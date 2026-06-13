@@ -6,13 +6,13 @@ export default function SettingsPage() {
   const { settingsForm, setSettingsForm, handleSaveSettings } = useDashboard();
   return (
                 <div className={`flex-1 overflow-y-auto p-6 md:p-8 bg-[#000000] space-y-6`}>
-                  <div className="border-b border-[#1e2d45] pb-4">
+                  <div className="border-b border-[#26262b] pb-4">
                     <h2 className="text-xl font-bold text-white">⚙️ ตั้งค่าความปลอดภัยและบัญชาการระบบ (System Settings)</h2>
                     <p className="text-xs text-[#7a9bbf] mt-1">กรอกข้อมูล Bot Token จริง และปรับแต่งพารามิเตอร์ตรวจสอบความเสี่ยงพอร์ต</p>
                   </div>
 
-                  <form onSubmit={handleSaveSettings} className="bg-[#111520] border border-[#1e2d45] rounded-xl p-6 space-y-4 max-w-xl">
-                    <div className="text-xs font-bold text-[#22d3ee] uppercase tracking-wider border-b border-[#1e2d45] pb-2 mb-2">
+                  <form onSubmit={handleSaveSettings} className="bg-[#111520] border border-[#26262b] rounded-xl p-6 space-y-4 max-w-xl">
+                    <div className="text-xs font-bold text-[#22d3ee] uppercase tracking-wider border-b border-[#26262b] pb-2 mb-2">
                       🤖 บัญชาการ Telegram Bot จริง
                     </div>
                     <div className="space-y-1.5">
@@ -22,11 +22,11 @@ export default function SettingsPage() {
                         value={settingsForm.telegram_token}
                         onChange={(e) => setSettingsForm({...settingsForm, telegram_token: e.target.value})}
                         placeholder="กรอก Bot Token ของคุณ เช่น 123456:ABC-def..."
-                        className="w-full bg-[#070a0f] border border-[#1e2d45] rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-[#3b82f6] font-mono"
+                        className="w-full bg-[#070a0f] border border-[#26262b] rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-[#3b82f6] font-mono"
                       />
                     </div>
 
-                    <div className="text-xs font-bold text-[#10b981] uppercase tracking-wider border-b border-[#1e2d45] pb-2 pt-2 mb-2">
+                    <div className="text-xs font-bold text-[#10b981] uppercase tracking-wider border-b border-[#26262b] pb-2 pt-2 mb-2">
                       🧠 มันสมองสภา AI (Claude API)
                     </div>
                     <div className="space-y-1.5">
@@ -36,11 +36,11 @@ export default function SettingsPage() {
                         value={settingsForm.anthropic_key}
                         onChange={(e) => setSettingsForm({...settingsForm, anthropic_key: e.target.value})}
                         placeholder="sk-ant-api03-..."
-                        className="w-full bg-[#070a0f] border border-[#1e2d45] rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-[#3b82f6] font-mono"
+                        className="w-full bg-[#070a0f] border border-[#26262b] rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-[#3b82f6] font-mono"
                       />
                     </div>
 
-                    <div className="text-xs font-bold text-[#fbbf24] uppercase tracking-wider border-b border-[#1e2d45] pb-2 pt-2 mb-2">
+                    <div className="text-xs font-bold text-[#fbbf24] uppercase tracking-wider border-b border-[#26262b] pb-2 pt-2 mb-2">
                       💰 การเชื่อมต่อคริปโต & หุ้นยอดนิยม (Binance, TwelveData, Finnhub, NewsAPI)
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -51,7 +51,7 @@ export default function SettingsPage() {
                           value={settingsForm.binance_key}
                           onChange={(e) => setSettingsForm({...settingsForm, binance_key: e.target.value})}
                           placeholder="Binance API Key"
-                          className="w-full bg-[#070a0f] border border-[#1e2d45] rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-[#3b82f6] font-mono"
+                          className="w-full bg-[#070a0f] border border-[#26262b] rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-[#3b82f6] font-mono"
                         />
                       </div>
                       <div className="space-y-1.5">
@@ -61,7 +61,7 @@ export default function SettingsPage() {
                           value={settingsForm.binance_secret}
                           onChange={(e) => setSettingsForm({...settingsForm, binance_secret: e.target.value})}
                           placeholder="Binance Secret Key"
-                          className="w-full bg-[#070a0f] border border-[#1e2d45] rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-[#3b82f6] font-mono"
+                          className="w-full bg-[#070a0f] border border-[#26262b] rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-[#3b82f6] font-mono"
                         />
                       </div>
                     </div>
@@ -74,7 +74,7 @@ export default function SettingsPage() {
                           value={settingsForm.news_api_key}
                           onChange={(e) => setSettingsForm({...settingsForm, news_api_key: e.target.value})}
                           placeholder="NewsAPI Key"
-                          className="w-full bg-[#070a0f] border border-[#1e2d45] rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-[#3b82f6] font-mono"
+                          className="w-full bg-[#070a0f] border border-[#26262b] rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-[#3b82f6] font-mono"
                         />
                       </div>
                       <div className="space-y-1.5">
@@ -84,7 +84,7 @@ export default function SettingsPage() {
                           value={settingsForm.twelvedata_api_key}
                           onChange={(e) => setSettingsForm({...settingsForm, twelvedata_api_key: e.target.value})}
                           placeholder="TwelveData Key"
-                          className="w-full bg-[#070a0f] border border-[#1e2d45] rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-[#3b82f6] font-mono"
+                          className="w-full bg-[#070a0f] border border-[#26262b] rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-[#3b82f6] font-mono"
                         />
                       </div>
                       <div className="space-y-1.5">
@@ -94,12 +94,12 @@ export default function SettingsPage() {
                           value={settingsForm.finnhub_api_key}
                           onChange={(e) => setSettingsForm({...settingsForm, finnhub_api_key: e.target.value})}
                           placeholder="Finnhub Token"
-                          className="w-full bg-[#070a0f] border border-[#1e2d45] rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-[#3b82f6] font-mono"
+                          className="w-full bg-[#070a0f] border border-[#26262b] rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-[#3b82f6] font-mono"
                         />
                       </div>
                     </div>
 
-                    <div className="text-xs font-bold text-[#f87171] uppercase tracking-wider border-b border-[#1e2d45] pb-2 pt-2 mb-2">
+                    <div className="text-xs font-bold text-[#f87171] uppercase tracking-wider border-b border-[#26262b] pb-2 pt-2 mb-2">
                       🛡️ การควบคุมความเสี่ยงพอร์ต
                     </div>
                     <div className="grid grid-cols-2 gap-4">
@@ -109,7 +109,7 @@ export default function SettingsPage() {
                           type="number" step="0.1"
                           value={settingsForm.maxRiskPerTradePct}
                           onChange={(e) => setSettingsForm({...settingsForm, maxRiskPerTradePct: Number(e.target.value)})}
-                          className="w-full bg-[#070a0f] border border-[#1e2d45] rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-[#3b82f6] font-mono"
+                          className="w-full bg-[#070a0f] border border-[#26262b] rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-[#3b82f6] font-mono"
                         />
                       </div>
                       <div className="space-y-1.5">
@@ -118,7 +118,7 @@ export default function SettingsPage() {
                           type="number" step="0.1"
                           value={settingsForm.maxOpenExposurePct}
                           onChange={(e) => setSettingsForm({...settingsForm, maxOpenExposurePct: Number(e.target.value)})}
-                          className="w-full bg-[#070a0f] border border-[#1e2d45] rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-[#3b82f6] font-mono"
+                          className="w-full bg-[#070a0f] border border-[#26262b] rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-[#3b82f6] font-mono"
                         />
                       </div>
                     </div>
@@ -132,8 +132,8 @@ export default function SettingsPage() {
                   </form>
 
                   {/* กล่องคู่มือสอนสร้างและเชื่อมต่อบอท Telegram จริง */}
-                  <div className="bg-[#111520] border border-[#1e2d45] rounded-xl p-5 space-y-4 max-w-xl text-xs">
-                    <h3 className="font-bold text-white text-sm flex items-center gap-1.5 border-b border-[#1e2d45] pb-2">
+                  <div className="bg-[#111520] border border-[#26262b] rounded-xl p-5 space-y-4 max-w-xl text-xs">
+                    <h3 className="font-bold text-white text-sm flex items-center gap-1.5 border-b border-[#26262b] pb-2">
                       📱 คู่มือการเปิดใช้งาน Telegram Bot และควบคุมจากมือถือ
                     </h3>
                     <div className="space-y-3 text-[#c8d8f0] leading-relaxed font-mono">
