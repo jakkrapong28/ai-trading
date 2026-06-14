@@ -9,6 +9,7 @@ from backend.engines.providers.binance import BinanceProvider
 from backend.engines.providers.twelvedata import TwelveDataProvider
 from backend.engines.providers.finnhub import FinnhubProvider
 from backend.engines.providers.mt5_bridge import MT5BridgeProvider
+from backend.engines.providers.yahoo import YahooProvider
 from backend.engines.providers.mock import MockProvider
 
 __all__ = [
@@ -21,5 +22,6 @@ __all__ = [
     "TwelveDataProvider",
     "FinnhubProvider",
     "MT5BridgeProvider",
+    "YahooProvider",
     "MockProvider",
 ]

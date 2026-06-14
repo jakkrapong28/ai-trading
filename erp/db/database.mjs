@@ -154,8 +154,10 @@ export async function initDb() {
     const statsCount = await client.query('SELECT count(*) as c FROM erp_stats');
     if (parseInt(statsCount.rows[0].c) === 0) {
       const initialCapital = parseFloat(process.env.INITIAL_CAPITAL || '45750.00');
+      // Start clean — accumulated PnL/fees grow from real webhook events, not
+      // fictional seed numbers (previously hardcoded 2340.50 / 145.20).
       await client.query(
-        `INSERT INTO erp_stats (id, accumulated_fees, accumulated_pnl, last_updated) VALUES (1, 145.20, 2340.50, NOW())`
+        `INSERT INTO erp_stats (id, accumulated_fees, accumulated_pnl, last_updated) VALUES (1, 0, 0, NOW())`
       );
       // Opening balance ledger entry
       await client.query(

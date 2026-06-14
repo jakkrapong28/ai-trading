@@ -23,6 +23,27 @@ def get_db():
         db.close()
 
 
+def ensure_schema_migrations():
+    """Lightweight additive migrations for columns that `create_all` won't add
+    to already-existing tables. Idempotent — safe to run on every startup.
+
+    Prevents the 'column does not exist' 500s described in README when the live
+    DB predates a new model column (e.g. trades.fee).
+    """
+    from sqlalchemy import text
+    statements = [
+        "ALTER TABLE trades ADD COLUMN IF NOT EXISTS fee DOUBLE PRECISION DEFAULT 0",
+        "ALTER TABLE trades ADD COLUMN IF NOT EXISTS trailing_notified BOOLEAN DEFAULT FALSE",
+    ]
+    try:
+        with engine.begin() as conn:
+            for stmt in statements:
+                conn.execute(text(stmt))
+    except Exception as e:
+        import logging
+        logging.getLogger("db-migrations").warning(f"Schema migration skipped/failed: {e}")
+
+
 async def run_db(fn, *args):
     """Run a synchronous DB function off the event loop.
 

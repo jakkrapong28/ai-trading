@@ -8,7 +8,7 @@ from typing import List, Dict, Any, Optional
 from dotenv import load_dotenv
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
-from fastapi import FastAPI, WebSocket, HTTPException
+from fastapi import FastAPI, WebSocket, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import httpx
@@ -24,7 +24,7 @@ from backend.shared.database.models import Trade, TradeStatus, TradeAction, ERPD
 from backend.shared.tasks import registry
 from backend.shared.webhooks import fire_erp_webhook
 
-from backend.engines.market_data import start_market_data_engine, latest_prices, get_latest_price
+from backend.engines.market_data import start_market_data_engine, latest_prices, get_latest_price, feed_status
 from backend.engines.news_intelligence import start_news_intelligence_engine
 from backend.engines.market_regime import start_market_regime_engine, ticker_data
 from backend.engines.strategy import start_strategy_engine
@@ -261,6 +261,9 @@ class TelegramCommandRequest(BaseModel):
 
 class SymbolRequest(BaseModel):
     symbol: str
+
+class ApproveRequest(BaseModel):
+    override: bool = False
 
 class RiskRequest(BaseModel):
     lot: float
@@ -518,7 +521,7 @@ async def handle_telegram_command_logic(cmd: str, user_tag: str) -> str:
                 pnl = res["realized_pnl"]
                 total_pnl += pnl
                 closed_count += 1
-                
+
                 closed_event = ExecutionEvent(
                     trade_id=t.id,
                     ticker=t.ticker,
@@ -528,6 +531,7 @@ async def handle_telegram_command_logic(cmd: str, user_tag: str) -> str:
                     entry_price=t.entry_price or 0.0,
                     exit_price=current_price,
                     realized_pnl=pnl,
+                    fee=res.get("fee", 0.0),
                     message="Manual Command Close"
                 )
                 await event_bus.publish(CH_EXEC_CLOSED, closed_event.model_dump())
@@ -729,6 +733,8 @@ async def lifespan(app: FastAPI):
     )
     
     Base.metadata.create_all(bind=engine)
+    from backend.shared.database.core import ensure_schema_migrations
+    ensure_schema_migrations()
     logger.info("Database synchronized")
     
     logger.info("Starting up engines...")
@@ -825,9 +831,17 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="AI Trading Command Center", version="3.0.0", lifespan=lifespan)
 
+# Restrict browser origins to the dashboard. Single-user/localhost trust model:
+# no API key, but the wildcard is dropped so arbitrary sites can't drive the API.
+# Override/extend via FRONTEND_ORIGIN (comma-separated) for other dev hosts.
+_allowed_origins = [
+    o.strip() for o in os.getenv(
+        "FRONTEND_ORIGIN", "http://localhost:3000,http://127.0.0.1:3000"
+    ).split(",") if o.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_allowed_origins,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -866,6 +880,27 @@ async def deep_health_check():
 @app.get("/metrics")
 async def get_metrics():
     return global_metrics
+
+
+@app.get("/metrics/prometheus")
+async def get_metrics_prometheus():
+    """Prometheus exposition for scraping (JSON stays at /metrics)."""
+    from backend.shared.metrics_prom import core_metrics_text
+    from backend.engines.risk import CORRELATION_REJECTION_COUNT
+    from backend.core.base import NAN_DETECTION_COUNT
+    from backend.shared.tasks import registry
+    from backend.engines.market_data import feed_status
+
+    active = len([t for t in registry.tasks if not t.done()])
+    feeds = []
+    for ticker in list(latest_prices.keys()):
+        fs = feed_status(ticker)
+        feeds.append({"symbol": ticker, **fs})
+
+    text = core_metrics_text(
+        global_metrics, NAN_DETECTION_COUNT, CORRELATION_REJECTION_COUNT, active, feeds
+    )
+    return Response(content=text, media_type="text/plain; version=0.0.4")
 
 @app.get("/debug/tasks")
 async def debug_tasks():
@@ -924,6 +959,45 @@ async def get_candles(symbol: str = None, tf: str = "M15", bars: int = 200):
     return {"symbol": sym, "tf": tf, "candles": candles}
 
 
+@app.get("/api/smc")
+async def get_smc(symbol: str = None, tf: str = "H1"):
+    """SMC concept levels + Volume Profile for the in-house chart overlay.
+
+    Returns drawable PRICE levels (Order Blocks, FVGs, swings, MSS) and
+    POC/VAH/VAL/VWAP so the frontend can render horizontal zones/lines.
+    """
+    from backend.core.candle_manager import TIMEFRAMES
+    from backend.core.smc import detect_smc_levels
+    from backend.core.volume_profile import calculate_volume_profile
+    from backend.core.base import calculate_atr_ohlc
+
+    sym = (symbol or current_symbol).upper()
+    if tf not in TIMEFRAMES:
+        tf = "H1"
+    cm = candle_managers.get(sym)
+    empty = {"symbol": sym, "tf": tf, "levels": {"order_blocks": [], "fvgs": [], "swings": [], "mss": None},
+             "volume_profile": {"poc": 0.0, "vah": 0.0, "val": 0.0, "vwap": 0.0}, "atr": 0.0}
+    if cm is None:
+        return empty
+
+    def _build():
+        df = cm.get_ohlc(tf, bars=120)
+        if df is None or len(df) < 20:
+            return empty
+        atr = calculate_atr_ohlc(df, 14)
+        levels = detect_smc_levels(df, atr)
+        vp = calculate_volume_profile(df)
+        return {
+            "symbol": sym,
+            "tf": tf,
+            "levels": levels,
+            "volume_profile": {k: vp.get(k, 0.0) for k in ("poc", "vah", "val", "vwap")},
+            "atr": round(atr, 4),
+        }
+
+    return await asyncio.to_thread(_build)
+
+
 @app.get("/api/state")
 async def get_state():
     from backend.engines.market_regime import regime_managers
@@ -957,15 +1031,19 @@ async def get_state():
     balances = await calculate_balances()
     
     def _smc_counts(db):
+        from sqlalchemy import func
+        last_cal = db.query(func.max(SMCSignalLog.calibrated_at)).scalar()
         return (
             db.query(SMCSignalLog).filter(SMCSignalLog.calibrated_at.isnot(None)).count(),
             db.query(SMCSignalLog).filter(SMCSignalLog.actual_outcome == "PENDING").count(),
+            last_cal.isoformat() if last_cal else None,
         )
     try:
-        calibrated_count, pending_count = await run_db(_smc_counts)
+        calibrated_count, pending_count, last_calibrated_at = await run_db(_smc_counts)
     except Exception:
         calibrated_count = 0
         pending_count = 0
+        last_calibrated_at = None
         
     broker_heartbeat = None
     if hasattr(BrokerHeartbeat, "_instance") and BrokerHeartbeat._instance:
@@ -1007,9 +1085,13 @@ async def get_state():
             ticker: data.get("last_price") or data.get("price")
             for ticker, data in latest_prices.items()
         },
+        "data_sources": {
+            ticker: feed_status(ticker) for ticker in latest_prices.keys()
+        },
         "calibration": {
             "calibrated_count": calibrated_count,
-            "pending_count": pending_count
+            "pending_count": pending_count,
+            "last_calibrated_at": last_calibrated_at
         },
         "correlation_rejections": {
             "count": CORRELATION_REJECTION_COUNT
@@ -1079,37 +1161,61 @@ async def change_mode(req: Dict[str, str]):
     raise HTTPException(status_code=400, detail="โหมดไม่ถูกต้อง")
 
 @app.post("/api/approve")
-async def approve_trade():
+async def approve_trade(req: ApproveRequest = None):
+    override = req.override if req else False
+
     indicators = get_cached_indicators(current_symbol)
     from backend.engines.market_regime import regime_managers
     regime = regime_managers[current_symbol].current_regime if current_symbol in regime_managers else None
     signal = evaluate_strategy_rules(indicators, current_symbol, regime=regime)
-    
+
     action = signal["action"]
     if action not in ["BUY", "SELL"]:
         action = "BUY"
-        
+
     price = indicators["latest"]
     atr = indicators["atr"]
     if atr <= 0:
         atr = price * 0.02
-        
+
     sl_dist = current_risk_input["stopDistance"]
     if sl_dist <= 0:
         sl_dist = 20.0
     tp_dist = current_risk_input["takeProfit"]
     if tp_dist <= 0:
         tp_dist = 40.0
-        
+
     if action == "BUY":
         stop_loss = price - sl_dist
         take_profit = price + tp_dist
     else:
         stop_loss = price + sl_dist
         take_profit = price - tp_dist
-        
+
     lot_size = current_risk_input["lot"]
-    
+
+    # ── Risk gate: manual approve must clear the same hard rules as auto.
+    # Circuit breaker is folded into check_trade_risk so a daily-loss lockout
+    # blocks the click too. Blocked clicks are NOT fired unless override=True.
+    from backend.engines.risk import cb_manager
+    cb_active = cb_manager.is_any_active()
+    equity = await accounting.get_account_equity(latest_prices)
+    risk = check_trade_risk(
+        current_symbol, action, price, lot_size, sl_dist,
+        current_risk_input["spread"],
+        circuit_breaker_triggered=cb_active,
+        take_profit=tp_dist,
+        reject_threshold=current_risk_input["rejectThreshold"],
+        risk_pct_limit=current_risk_input["riskPct"],
+        equity=equity,
+        broker_spread=current_spread_pips(current_symbol),
+    )
+    reasons = [c["name"] for c in risk["checks"] if not c["pass"]]
+    blocked = not risk["passed"]
+
+    if blocked and not override:
+        return {"status": "blocked", "blocked": True, "reasons": reasons, "risk": risk}
+
     from backend.shared.schema.events import RiskApprovedEvent
     approve_event = RiskApprovedEvent(
         ticker=current_symbol,
@@ -1122,7 +1228,24 @@ async def approve_trade():
         atr_at_entry=atr
     )
     await event_bus.publish(CH_RISK_APPROVED, approve_event.model_dump())
-    return {"status": "success", "message": "ส่งคำขอเปิดออเดอร์ไปยังตลาดเรียบร้อย"}
+
+    overridden = blocked and override
+    if overridden:
+        # Audit trail: every override is logged to the journal + alerted.
+        reason_txt = ", ".join(reasons)
+        await event_bus.publish(CH_AI_JOURNAL, {
+            "ticker": current_symbol,
+            "decision": "MANUAL_OVERRIDE",
+            "signal_action": action,
+            "confidence_score": 1.0,
+            "reasons": [f"⚠️ ผู้ใช้ override กฎความปลอดภัยเปิดออเดอร์ {action} {current_symbol} ทั้งที่ติด: {reason_txt}"]
+        })
+        from backend.alert import send_alert
+        asyncio.create_task(send_alert("WARNING", f"⚠️ MANUAL OVERRIDE: {action} {current_symbol} เปิดทั้งที่ติดกฎ — {reason_txt}"))
+        return {"status": "success", "overridden": True, "reasons": reasons,
+                "message": "เปิดออเดอร์แบบ MANUAL OVERRIDE (ข้ามกฎความปลอดภัย) เรียบร้อย"}
+
+    return {"status": "success", "overridden": False, "message": "ส่งคำขอเปิดออเดอร์ไปยังตลาดเรียบร้อย"}
 
 @app.post("/api/reject")
 async def reject_trade():
@@ -1257,7 +1380,7 @@ async def close_order_endpoint(req: CloseOrderRequest):
         broker = PaperBroker()
         res = await broker.close_order(trade.id, exit_price=current_price)
         realized_pnl = res["realized_pnl"]
-        
+
         # Publish closed event to Redis
         closed_event = ExecutionEvent(
             trade_id=trade.id,
@@ -1268,6 +1391,7 @@ async def close_order_endpoint(req: CloseOrderRequest):
             entry_price=trade.entry_price or 0.0,
             exit_price=current_price,
             realized_pnl=realized_pnl,
+            fee=res.get("fee", 0.0),
             message="Manual Close from Dashboard"
         )
         await event_bus.publish(CH_EXEC_CLOSED, closed_event.model_dump())
@@ -1302,33 +1426,56 @@ async def trigger_calibration():
     await run_calibration()
     return {"status": "success", "message": "Calibration completed successfully."}
 
+def _is_masked(value: str) -> bool:
+    """A value the dashboard echoed back from mask_secret() ('****1234') — NOT a
+    real secret. Saving it would clobber the real key (this is exactly how the
+    live keys got corrupted to 8-char '****xxxx' values)."""
+    return bool(value) and value.startswith("****")
+
+
 @app.post("/api/update-settings")
 async def update_settings(req: SettingsRequest):
-    os.environ["TELEGRAM_TOKEN"] = req.telegram_token or ""
-    os.environ["ANTHROPIC_API_KEY"] = req.anthropic_key or ""
-    os.environ["BINANCE_API_KEY"] = req.binance_key or ""
-    os.environ["BINANCE_API_SECRET"] = req.binance_secret or ""
-    os.environ["NEWS_API_KEY"] = req.news_api_key or ""
-    os.environ["TWELVEDATA_API_KEY"] = req.twelvedata_api_key or ""
-    os.environ["FINNHUB_API_KEY"] = req.finnhub_api_key or ""
-    
+    # Map env var -> incoming value. A masked value (****1234) means "unchanged";
+    # an empty string also means "leave as-is" (the form didn't provide it).
+    incoming = {
+        "TELEGRAM_TOKEN": req.telegram_token,
+        "ANTHROPIC_API_KEY": req.anthropic_key,
+        "BINANCE_API_KEY": req.binance_key,
+        "BINANCE_API_SECRET": req.binance_secret,
+        "NEWS_API_KEY": req.news_api_key,
+        "TWELVEDATA_API_KEY": req.twelvedata_api_key,
+        "FINNHUB_API_KEY": req.finnhub_api_key,
+    }
+    updates = {k: v for k, v in incoming.items() if v and not _is_masked(v)}
+
+    for k, v in updates.items():
+        os.environ[k] = v
+
     try:
         env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+
+        # Merge: preserve every existing key (ERP_API_KEY, ERP_WEBHOOK_SECRET,
+        # STARTING_BALANCE, COMMISSION_RATE_*, real API keys not re-entered, ...)
+        # and only overwrite the ones the form actually changed to a real value.
+        env_vars: dict = {}
+        if os.path.exists(env_path):
+            with open(env_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    k, v = line.split("=", 1)
+                    env_vars[k.strip()] = v
+
+        env_vars.update(updates)
+
         with open(env_path, "w", encoding="utf-8") as f:
-            f.write(f"TELEGRAM_TOKEN={req.telegram_token or ''}\n")
-            f.write(f"ANTHROPIC_API_KEY={req.anthropic_key or ''}\n")
-            f.write(f"BINANCE_API_KEY={req.binance_key or ''}\n")
-            f.write(f"BINANCE_API_SECRET={req.binance_secret or ''}\n")
-            f.write(f"NEWS_API_KEY={req.news_api_key or ''}\n")
-            f.write(f"TWELVEDATA_API_KEY={req.twelvedata_api_key or ''}\n")
-            f.write(f"FINNHUB_API_KEY={req.finnhub_api_key or ''}\n")
-            f.write(f"DATABASE_URL={os.getenv('DATABASE_URL', '')}\n")
-            f.write(f"REDIS_URL={os.getenv('REDIS_URL', '')}\n")
-            f.write(f"PAPER_MODE={os.getenv('PAPER_MODE', 'true')}\n")
+            for k, v in env_vars.items():
+                f.write(f"{k}={v}\n")
     except Exception as e:
         logger.error(f"Error saving settings to .env: {e}")
-        
-    return {"status": "success"}
+
+    return {"status": "success", "updated": list(updates.keys())}
 
 @app.get("/api/erp/ledger")
 async def proxy_erp_ledger():

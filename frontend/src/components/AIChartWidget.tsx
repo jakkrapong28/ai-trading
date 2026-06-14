@@ -21,9 +21,19 @@ const API = "http://localhost:8000";
 
 type RawCandle = { time: number; open: number; high: number; low: number; close: number };
 
+type SmcData = {
+  levels: {
+    order_blocks: { top: number; bottom: number; kind: string }[];
+    fvgs: { top: number; bottom: number; kind: string }[];
+    swings: { price: number; kind: string }[];
+    mss: { price: number; kind: string } | null;
+  };
+  volume_profile: { poc: number; vah: number; val: number; vwap: number };
+};
+
 // Which AI line groups are visible. The chart is ours, so every line is drawn
 // from our own backend data (no TradingView overlay possible on the iframe).
-type LineToggles = { sr: boolean; trade: boolean; atr: boolean; ema: boolean };
+type LineToggles = { sr: boolean; trade: boolean; atr: boolean; ema: boolean; smc: boolean };
 
 // EMA overlays (like Binance MA 7/25/99), computed client-side from closes.
 const EMA_CONFIG = [
@@ -58,7 +68,8 @@ export default function AIChartWidget({ symbol, tf = "H1" }: { symbol: string; t
   const priceLinesRef = useRef<IPriceLine[]>([]);
   const lastCandleRef = useRef<CandlestickData<UTCTimestamp> | null>(null);
 
-  const [toggles, setToggles] = useState<LineToggles>({ sr: true, trade: true, atr: false, ema: true });
+  const [toggles, setToggles] = useState<LineToggles>({ sr: true, trade: true, atr: false, ema: true, smc: false });
+  const [smc, setSmc] = useState<SmcData | null>(null);
   const [loading, setLoading] = useState(true);
 
   // ── Create chart once ──────────────────────────────────────────────
@@ -170,6 +181,26 @@ export default function AIChartWidget({ symbol, tf = "H1" }: { symbol: string; t
     };
   }, [symbol, tf]);
 
+  // ── Load SMC concept levels + Volume Profile for the overlay ───────
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      try {
+        const res = await fetch(`${API}/api/smc?symbol=${symbol}&tf=${tf}`);
+        const json = await res.json();
+        if (alive) setSmc(json);
+      } catch {
+        /* keep previous overlay on transient error */
+      }
+    };
+    load();
+    const id = setInterval(load, 15000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [symbol, tf]);
+
   // ── Live-update the forming candle from the streamed last price ─────
   useEffect(() => {
     const series = seriesRef.current;
@@ -229,13 +260,30 @@ export default function AIChartWidget({ symbol, tf = "H1" }: { symbol: string; t
         add(open.tp_price, "#10b981", "TP");
       }
     }
-  }, [toggles, indicators, orders, symbol]);
+    if (toggles.smc && smc) {
+      const vp = smc.volume_profile;
+      add(vp.poc, "#22d3ee", "POC");
+      add(vp.vah, "#0891b2", "VAH", true);
+      add(vp.val, "#0891b2", "VAL", true);
+      smc.levels.order_blocks.forEach((ob) => {
+        const c = ob.kind === "bull" ? "#10b981" : "#ef4444";
+        add(ob.top, c, "OB", true);
+        add(ob.bottom, c, "", true);
+      });
+      smc.levels.fvgs.forEach((f) => {
+        add(f.top, "#a855f7", "FVG", true);
+        add(f.bottom, "#a855f7", "", true);
+      });
+      if (smc.levels.mss) add(smc.levels.mss.price, "#fbbf24", "MSS");
+    }
+  }, [toggles, indicators, orders, symbol, smc]);
 
   const lineButtons: { k: keyof LineToggles; label: string }[] = [
     { k: "sr", label: "แนวรับ/ต้าน" },
     { k: "trade", label: "Entry/SL/TP" },
     { k: "ema", label: "EMA" },
     { k: "atr", label: "ATR" },
+    { k: "smc", label: "SMC" },
   ];
 
   return (

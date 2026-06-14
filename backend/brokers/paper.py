@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from backend.brokers.base import BrokerAdapter
 from backend.shared.database.core import SessionLocal
 from backend.shared.database.models import Trade, TradeStatus, TradeAction
+from backend.core.base import trade_pnl, compute_fee
 from backend.alert import send_alert
 
 logger = logging.getLogger("broker-paper")
@@ -102,21 +103,22 @@ class PaperBroker(BrokerAdapter):
             trade.status = TradeStatus.CLOSED
             trade.exit_price = exit_price
             trade.closed_at = datetime.utcnow()
-            
-            # Calculate PnL
-            if trade.action == TradeAction.BUY:
-                realized = (exit_price - trade.entry_price) * trade.lot_size
-            else:
-                realized = (trade.entry_price - exit_price) * trade.lot_size
-                
-            trade.realized_pnl = realized
+
+            # PnL via single source of truth (contractSize-correct for XAUUSD/EURUSD).
+            action = trade.action.value if hasattr(trade.action, "value") else trade.action
+            realized = trade_pnl(trade.ticker, action, trade.entry_price, exit_price, trade.lot_size)
+            fee = compute_fee(trade.ticker, exit_price, trade.lot_size)
+
+            trade.realized_pnl = (trade.realized_pnl or 0.0) + realized
+            trade.fee = (trade.fee or 0.0) + fee
             db.commit()
-            
+
             return {
                 "order_id": order_id,
                 "status": "CLOSED",
                 "exit_price": exit_price,
-                "realized_pnl": realized
+                "realized_pnl": realized,
+                "fee": fee
             }
         finally:
             db.close()
@@ -136,18 +138,16 @@ class PaperBroker(BrokerAdapter):
             closed_lot = round(trade.lot_size * close_pct, 4)
             remaining_lot = round(trade.lot_size - closed_lot, 4)
 
-            # Calculate realized PnL for the closed portion
-            if trade.action == TradeAction.BUY:
-                realized = (exit_price - trade.entry_price) * closed_lot
-            else:
-                realized = (trade.entry_price - exit_price) * closed_lot
+            # Realized PnL + fee for the closed portion (contractSize-correct).
+            action = trade.action.value if hasattr(trade.action, "value") else trade.action
+            realized = trade_pnl(trade.ticker, action, trade.entry_price, exit_price, closed_lot)
+            fee = compute_fee(trade.ticker, exit_price, closed_lot)
 
             # Update the existing trade lot size to remaining
             trade.lot_size = remaining_lot
             trade.status = TradeStatus.PARTIAL
-            if trade.realized_pnl is None:
-                trade.realized_pnl = 0.0
-            trade.realized_pnl += realized
+            trade.realized_pnl = (trade.realized_pnl or 0.0) + realized
+            trade.fee = (trade.fee or 0.0) + fee
 
             db.commit()
 
@@ -157,7 +157,8 @@ class PaperBroker(BrokerAdapter):
                 "closed_lot": closed_lot,
                 "remaining_lot": remaining_lot,
                 "exit_price": exit_price,
-                "realized_pnl": realized
+                "realized_pnl": realized,
+                "fee": fee
             }
         finally:
             db.close()
@@ -246,4 +247,14 @@ class BrokerHeartbeat:
                 await asyncio.sleep(self.interval)
 
     async def handle_disconnect(self):
-        await send_alert("CRITICAL", f"🚨 MT5 disconnect after {self.reconnect_attempts} attempts — last heartbeat: {self.last_heartbeat}")
+        # Freeze trading: drop to watch mode + raise the critical-watch flag so the
+        # Risk Engine stops approving new orders. A paper broker can't reach an
+        # external venue to flatten, so we halt new exposure rather than blind-close.
+        import os
+        os.environ["CURRENT_MODE"] = "watch"
+        os.environ["PORTFOLIO_CRITICAL_WATCH"] = "true"
+        await send_alert(
+            "CRITICAL",
+            f"🚨 MT5 disconnect after {self.reconnect_attempts} attempts — last heartbeat: "
+            f"{self.last_heartbeat}. Trading frozen (mode→watch).",
+        )

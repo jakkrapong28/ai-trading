@@ -119,6 +119,7 @@ class ExecutionEngine:
                 lot_size=trade.lot_size,
                 exit_price=price,
                 realized_pnl=realized,
+                fee=res.get("fee", 0.0),
                 message=reason
             )
             await self.event_bus.publish(CH_EXEC_CLOSED, closed.model_dump())
@@ -136,11 +137,12 @@ class ExecutionEngine:
                     lot_size=res["closed_lot"],
                     exit_price=price,
                     realized_pnl=realized,
+                    fee=res.get("fee", 0.0),
                     message=f"Partial Close: {reason}"
                 )
                 await self.event_bus.publish(CH_EXEC_CLOSED, closed.model_dump())
                 logger.info(f"[{ticker}] Trade {trade_id} partially closed {close_pct:.1%} ({reason}) at {price:.2f}. Realized: {realized:.2f}")
-                asyncio.create_task(fire_erp_webhook("trade.pnl_realized", closed.model_dump(), trade_id))
+                asyncio.create_task(fire_erp_webhook("trade.partial_closed", closed.model_dump(), trade_id))
             except Exception as e:
                 logger.warning(f"Partial close failed for {trade_id}, falling back to full close: {e}")
                 res = await self.broker.close_order(trade_id, exit_price=price)
@@ -153,6 +155,7 @@ class ExecutionEngine:
                     lot_size=trade.lot_size,
                     exit_price=price,
                     realized_pnl=realized,
+                    fee=res.get("fee", 0.0),
                     message=f"{reason} (Fallback from partial close error)"
                 )
                 await self.event_bus.publish(CH_EXEC_CLOSED, closed.model_dump())
@@ -224,6 +227,8 @@ class ExecutionEngine:
                                 await self.broker.modify_order(trade_id, stop_loss=entry)
                                 trade.sl_price = entry
                                 db.commit()
+                                asyncio.create_task(fire_erp_webhook(
+                                    "trade.break_even", {"ticker": ticker, "price": entry}, trade_id))
                                 db.close()
                                 continue
                                 
@@ -256,6 +261,9 @@ class ExecutionEngine:
                                 trade.sl_price = entry
                                 db.commit()
                                 logger.info(f"[{ticker}] 1R Reached. SL moved to BE ({entry:.2f})")
+                                # Fires once (status OPEN→RUNNING gate) — ERP marks position BREAK_EVEN.
+                                asyncio.create_task(fire_erp_webhook(
+                                    "trade.break_even", {"ticker": ticker, "price": entry}, trade_id))
                                 
                             # Standard 3R trailing if not using partial TP
                             if current_r >= 3.0:
@@ -304,7 +312,20 @@ class ExecutionEngine:
                                     trade.sl_price = trailing_sl
                                     db.commit()
                                     logger.info(f"[{ticker}] Chandelier Exit: SL moved to {trailing_sl:.2f} (1 ATR from {'lowest' if action == 'SELL' else 'highest'} {peak:.2f})")
-                        
+
+                        # Notify ERP once when SL first locks beyond entry (true trailing, not BE).
+                        sl_now = trade.sl_price
+                        in_profit_lock = sl_now is not None and (
+                            (action == "BUY" and sl_now > entry) or (action == "SELL" and sl_now < entry)
+                        )
+                        if in_profit_lock and not trade.trailing_notified:
+                            trade.trailing_notified = True
+                            db.commit()
+                            asyncio.create_task(fire_erp_webhook(
+                                "trade.trailing_activated",
+                                {"ticker": ticker, "price": price, "new_stop_loss": sl_now},
+                                trade_id))
+
                         # 3. Check Standard Exit Conditions
                         if sl is None:
                             logger.warning(f"[{ticker}] SL price is None for trade {trade_id}. Skipping SL check.")

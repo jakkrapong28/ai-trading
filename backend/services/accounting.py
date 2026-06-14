@@ -9,7 +9,7 @@ import logging
 from typing import List, Optional
 
 from backend.config import STARTING_BALANCE, ACCOUNT_DISPLAY_SPLITS
-from backend.core.base import SYMBOLS
+from backend.core.base import trade_pnl
 from backend.shared.database.core import run_db
 from backend.shared.database.models import Trade, TradeStatus
 
@@ -41,9 +41,8 @@ def floating_pnl(db, latest_prices: dict) -> float:
         price = cur["last_price"]
         entry = t.entry_price or 0.0
         lot = t.lot_size or 0.0
-        contract_size = SYMBOLS.get(t.ticker, SYMBOLS["XAUUSD"]).get("contractSize", 100)
-        direction = 1 if t.action.value == "BUY" else -1
-        total += direction * (price - entry) * lot * contract_size
+        # Single source of truth — same formula as realized PnL (contractSize-correct).
+        total += trade_pnl(t.ticker, t.action.value, entry, price, lot)
     return total
 
 
@@ -84,7 +83,7 @@ def list_orders(db, limit: int = 100) -> List[dict]:
             "sl_price": t.sl_price or 0.0,
             "tp_price": t.tp_price or 0.0,
             "pnl": t.realized_pnl or 0.0,
-            "fee": 0.0,
+            "fee": t.fee or 0.0,
             "status": t.status.value,
             "opened_at": t.opened_at.isoformat() if t.opened_at else None,
             "closed_at": t.closed_at.isoformat() if t.closed_at else None,

@@ -146,11 +146,26 @@ def compute_macro_trend_from_closes(closes: List[float]) -> Optional[str]:
 def trade_pnl(
     symbol: str, action: str, entry: float, exit_price: float, lot: float
 ) -> float:
-    """คำนวณ PnL ตาม contract size จริง"""
+    """คำนวณ PnL ตาม contract size จริง — single source of truth สำหรับ realized และ floating PnL"""
     spec = SYMBOLS.get(symbol, SYMBOLS["XAUUSD"])
     contract_size = spec.get("contractSize", 100)
     diff = exit_price - entry if action == "BUY" else entry - exit_price
     return diff * lot * contract_size
+
+
+def compute_fee(symbol: str, price: float, lot: float) -> float:
+    """ค่าธรรมเนียมโบรกเกอร์ตาม notional (lot × contractSize × price) × commission rate.
+
+    Deterministic ต่อ asset class (ดู config.COMMISSION_RATE). ใช้ราคาปิดเป็นฐาน
+    notional; partial close ส่ง closed_lot เข้ามาเพื่อคิดตามสัดส่วน.
+    """
+    from backend.config import COMMISSION_RATE
+    spec = SYMBOLS.get(symbol, SYMBOLS["XAUUSD"])
+    contract_size = spec.get("contractSize", 100)
+    asset_class = spec.get("assetClass", "metal")
+    rate = COMMISSION_RATE.get(asset_class, 0.00008)
+    notional = abs(lot) * contract_size * abs(price or 0.0)
+    return round(notional * rate, 2)
 
 # ─────────────────────────────────────────────────────────
 # Continuous Price History Store (deque-based, ไม่ reset)

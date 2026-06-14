@@ -72,6 +72,7 @@ class ExecutionEvent(BaseModel):
     entry_price: Optional[float] = None
     exit_price: Optional[float] = None
     realized_pnl: Optional[float] = None
+    fee: Optional[float] = None
     message: Optional[str] = None
 
 class PortfolioSnapshotEvent(BaseModel):

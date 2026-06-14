@@ -32,6 +32,7 @@ import {
   getTrades,
   getPerformance,
   getMetrics,
+  getMetricsPrometheus,
   resetERP
 } from './routes/handlers.mjs';
 
@@ -140,6 +141,7 @@ app.get('/api/performance', getPerformance);
 
 // Observability (Phase 7)
 app.get('/metrics', getMetrics);
+app.get('/metrics/prometheus', getMetricsPrometheus);
 
 // Restricted admin route (development only — Phase 1)
 app.delete('/api/reset', resetERP);

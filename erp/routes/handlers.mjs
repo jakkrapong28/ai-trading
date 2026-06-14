@@ -606,6 +606,53 @@ export async function getMetrics(req, res) {
 }
 
 // ─────────────────────────────────────────────────────────
+// GET /metrics/prometheus — Prometheus exposition (text 0.0.4)
+// ─────────────────────────────────────────────────────────
+export async function getMetricsPrometheus(req, res) {
+  try {
+    const [statsRes, tradesRes, openRes, failedDelivRes] = await Promise.all([
+      pool.query('SELECT * FROM erp_stats WHERE id = 1'),
+      pool.query(`SELECT realized_pnl, rr_ratio FROM trade_positions WHERE status = 'CLOSED'`),
+      pool.query(`SELECT count(*) as c FROM trade_positions WHERE status NOT IN ('CLOSED')`),
+      pool.query(`SELECT count(*) as c FROM erp_delivery_records WHERE status IN ('ERROR', 'FAILED')`)
+    ]);
+
+    const stats = statsRes.rows[0] || { accumulated_pnl: 0, accumulated_fees: 0 };
+    const closed = tradesRes.rows;
+    const wins = closed.filter(t => (t.realized_pnl || 0) > 0).length;
+    const rrVals = closed.filter(t => t.rr_ratio).map(t => t.rr_ratio);
+    const winRate = closed.length > 0 ? (wins / closed.length) * 100 : 0;
+    const avgRR = rrVals.length > 0 ? rrVals.reduce((a, b) => a + b, 0) / rrVals.length : 0;
+
+    const g = (name, value, help, type = 'gauge') => {
+      const lines = [];
+      if (help) lines.push(`# HELP ${name} ${help}`);
+      lines.push(`# TYPE ${name} ${type}`);
+      lines.push(`${name} ${value}`);
+      return lines.join('\n');
+    };
+
+    const body = [
+      g('erp_total_trades', closed.length, 'Closed trades recorded'),
+      g('erp_open_trades', parseInt(openRes.rows[0].c), 'Currently open positions'),
+      g('erp_win_rate', Number(winRate.toFixed(2)), 'Win rate percent'),
+      g('erp_total_pnl', Number((stats.accumulated_pnl || 0).toFixed(2)), 'Accumulated realized PnL'),
+      g('erp_total_fees', Number((stats.accumulated_fees || 0).toFixed(2)), 'Accumulated broker fees'),
+      g('erp_net_pnl', Number(((stats.accumulated_pnl || 0) - (stats.accumulated_fees || 0)).toFixed(2)), 'PnL net of fees'),
+      g('erp_average_rr', Number(avgRR.toFixed(3)), 'Average realized R:R'),
+      g('erp_delivery_failures', parseInt(failedDelivRes.rows[0].c), 'Failed webhook deliveries', 'counter'),
+      g('erp_uptime_seconds', Number(process.uptime().toFixed(0)), 'Process uptime', 'counter'),
+    ].join('\n') + '\n';
+
+    res.set('Content-Type', 'text/plain; version=0.0.4');
+    return res.send(body);
+  } catch (err) {
+    res.set('Content-Type', 'text/plain');
+    return res.status(500).send(`# error ${err.message}\n`);
+  }
+}
+
+// ─────────────────────────────────────────────────────────
 // DELETE /api/reset — dev only
 // ─────────────────────────────────────────────────────────
 export async function resetERP(req, res) {

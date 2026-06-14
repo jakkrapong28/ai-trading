@@ -60,6 +60,7 @@ class Trade(Base):
     confidence = Column(Float, nullable=True)
     votes = Column(JSON, nullable=True)
     realized_pnl = Column(Float, nullable=True)
+    fee = Column(Float, nullable=True, default=0.0)
     pnl_percentage = Column(Float, nullable=True)
     opened_at = Column(DateTime, default=datetime.utcnow)
     closed_at = Column(DateTime, nullable=True)
@@ -68,6 +69,7 @@ class Trade(Base):
     tp1_hit = Column(Boolean, default=False)
     tp2_hit = Column(Boolean, default=False)
     tp3_hit = Column(Boolean, default=False)
+    trailing_notified = Column(Boolean, default=False)
     market_regime = Column(String, nullable=True)
     position = relationship("Position", back_populates="trades")
 

@@ -13,8 +13,12 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./database/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql
-      - ./database/seeds.sql:/docker-entrypoint-initdb.d/02_seeds.sql
+      # NOTE: database/schema.sql + seeds.sql are LEGACY (orphan tables from an
+      # earlier design — market_snapshots/trade_orders/account_balances, and an
+      # audit_logs with NOT NULL columns that conflicts with the ERP schema).
+      # The real schemas are created at startup by the backend (SQLAlchemy
+      # create_all) and ERP (initDb). Do NOT re-mount these without reconciling
+      # the audit_logs definition, or ERP needs its ALTER ... DROP NOT NULL hack.
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d ai_trading"]
@@ -36,6 +40,40 @@ services:
       timeout: 5s
       retries: 5
 
+  # ── Observability (P4-4) ──────────────────────────────────
+  # Prometheus scrapes Core (:8000) + ERP (:5001) which run on the HOST, so it
+  # reaches them via host.docker.internal. Grafana auto-provisions the datasource
+  # + a starter dashboard. Grafana UI on :3001 (Next.js owns :3000).
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: ai_trading_prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - promdata:/prometheus
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: ai_trading_grafana
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafanadata:/var/lib/grafana
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
 volumes:
   pgdata:
   redisdata:
+  promdata:
+  grafanadata:

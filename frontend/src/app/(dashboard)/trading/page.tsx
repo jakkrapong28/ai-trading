@@ -633,7 +633,7 @@ export default function TradingPage() {
               </div>
                   
               <button
-                onClick={handleApprove}
+                onClick={() => handleApprove()}
                 disabled={mode === "auto" || !signal || (signal.action !== "BUY" && signal.action !== "SELL")}
                 className="px-3.5 py-1 bg-[#0e3a1f] hover:bg-[#14532d] disabled:bg-[#111520] disabled:text-[#3d5a7a] border border-[#166534] disabled:border-[#26262b] text-[#10b981] disabled:text-[#3d5a7a] text-[10px] font-bold rounded transition flex items-center gap-1.5 h-7"
               >

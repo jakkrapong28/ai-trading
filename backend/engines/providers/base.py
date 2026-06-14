@@ -46,6 +46,26 @@ def price_age(ticker: str) -> float:
     return (datetime.now(timezone.utc) - data["timestamp"]).total_seconds()
 
 
+def feed_status(ticker: str) -> Dict[str, Any]:
+    """Health of a symbol's price feed for the dashboard badge.
+
+    status: 'offline' (never seen) | 'mock' (synthetic gap-filler) |
+            'stale' (real feed but >STALE_AFTER_SECONDS old) | 'live'.
+    """
+    data = latest_prices.get(ticker)
+    if not data:
+        return {"source": None, "age": None, "status": "offline"}
+    age = (datetime.now(timezone.utc) - data["timestamp"]).total_seconds()
+    source = data.get("source")
+    if source == "mock":
+        status = "mock"
+    elif age > STALE_AFTER_SECONDS:
+        status = "stale"
+    else:
+        status = "live"
+    return {"source": source, "age": round(age, 1), "status": status}
+
+
 async def emit_tick(
     event_bus: EventBus,
     ticker: str,

@@ -1,0 +1,90 @@
+{
+  "uid": "ai-trading-overview",
+  "title": "AI Trading — System Health",
+  "tags": ["ai-trading"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "15s",
+  "time": { "from": "now-3h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Net PnL (ERP)",
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "currencyUSD", "color": { "mode": "thresholds" }, "thresholds": { "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 0 } ] } } },
+      "targets": [ { "expr": "erp_net_pnl", "refId": "A" } ]
+    },
+    {
+      "id": 2,
+      "type": "gauge",
+      "title": "Win Rate % (ERP)",
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "thresholds": { "steps": [ { "color": "red", "value": null }, { "color": "yellow", "value": 40 }, { "color": "green", "value": 55 } ] } } },
+      "targets": [ { "expr": "erp_win_rate", "refId": "A" } ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Webhook Delivery Failures",
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] } } },
+      "targets": [ { "expr": "erp_delivery_failures", "refId": "A" } ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Core Background Tasks",
+      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 5 } ] } } },
+      "targets": [ { "expr": "ai_trading_active_background_tasks", "refId": "A" } ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "PnL & Fees over time (ERP)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 5 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "currencyUSD" } },
+      "targets": [
+        { "expr": "erp_total_pnl", "legendFormat": "PnL", "refId": "A" },
+        { "expr": "erp_total_fees", "legendFormat": "Fees", "refId": "B" }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Feed Live (1=live) per symbol",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "min": 0, "max": 1, "custom": { "drawStyle": "line", "lineInterpolation": "stepAfter" } } },
+      "targets": [ { "expr": "ai_trading_feed_live", "legendFormat": "{{symbol}}", "refId": "A" } ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Signal pipeline (Core)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 13 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "ai_trading_signals_generated", "legendFormat": "generated", "refId": "A" },
+        { "expr": "ai_trading_orders_opened", "legendFormat": "opened", "refId": "B" },
+        { "expr": "ai_trading_risk_rejected", "legendFormat": "risk rejected", "refId": "C" }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Feed age (seconds) per symbol",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 13 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [ { "expr": "ai_trading_feed_age_seconds", "legendFormat": "{{symbol}} ({{source}})", "refId": "A" } ]
+    }
+  ]
+}

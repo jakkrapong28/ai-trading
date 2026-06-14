@@ -26,12 +26,14 @@ from backend.engines.providers.base import (  # noqa: F401
     latest_prices,
     get_latest_price,
     price_age,
+    feed_status,
 )
 from backend.engines.providers import (
     BinanceProvider,
     TwelveDataProvider,
     FinnhubProvider,
     MT5BridgeProvider,
+    YahooProvider,
     MockProvider,
 )
 
@@ -43,7 +45,14 @@ MONITORED = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT",
 
 
 async def heartbeat_monitor():
-    """Log per-symbol freshness and active source every 30s."""
+    """Log per-symbol freshness and active source every 30s, and alert when a
+    feed goes critically stale (>120s) so a dead provider isn't silent.
+
+    Alerts are edge-triggered per symbol (fire once on entering STALE, reset on
+    recovery) to avoid flooding the alert channel every 30s.
+    """
+    from backend.alert import send_alert
+    stale_alerted: set = set()
     while True:
         try:
             await asyncio.sleep(30)
@@ -54,10 +63,18 @@ async def heartbeat_monitor():
                     continue
                 age = (datetime.now(timezone.utc) - data["timestamp"]).total_seconds()
                 src = data.get("source", "?")
-                if age > 60:
+                if age > 120:
+                    logger.warning(f"[HEARTBEAT] {ticker} STALE {age:.0f}s (last src={src})")
+                    if ticker not in stale_alerted:
+                        stale_alerted.add(ticker)
+                        await send_alert("ERROR", f"📡 Market data stale for {ticker}: {age:.0f}s (last src={src})")
+                elif age > 60:
                     logger.warning(f"[HEARTBEAT] {ticker} STALE {age:.0f}s (last src={src})")
                 else:
                     logger.debug(f"[HEARTBEAT] {ticker} OK {age:.1f}s (src={src})")
+                    if ticker in stale_alerted:
+                        stale_alerted.discard(ticker)
+                        await send_alert("INFO", f"✅ Market data recovered for {ticker} ({src})")
         except asyncio.CancelledError:
             break
 
@@ -73,6 +90,7 @@ def start_market_data_engine(event_bus: EventBus):
         TwelveDataProvider(event_bus),
         FinnhubProvider(event_bus),
         MT5BridgeProvider(event_bus),
+        YahooProvider(event_bus),   # free real stock prices (no key) — above mock
         MockProvider(event_bus),
     ]
 

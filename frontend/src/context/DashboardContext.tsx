@@ -39,8 +39,10 @@ function useDashboardState() {
   const [circuitBreakers, setCircuitBreakers] = useState<Record<string, any>>({});
   const [heartbeats, setHeartbeats] = useState<Record<string, any>>({});
   const [nanLogs, setNanLogs] = useState({ count: 0 });
-  const [calibration, setCalibration] = useState({ calibrated_count: 0, pending_count: 0 });
+  const [calibration, setCalibration] = useState<{ calibrated_count: number; pending_count: number; last_calibrated_at?: string | null }>({ calibrated_count: 0, pending_count: 0, last_calibrated_at: null });
   const [correlationRejections, setCorrelationRejections] = useState({ count: 0 });
+  // Per-symbol feed health for the data-source badge (live/stale/mock/offline).
+  const [dataSources, setDataSources] = useState<Record<string, { source: string | null; age: number | null; status: string }>>({});
   const [signalActivity, setSignalActivity] = useState<SignalActivity[]>([]);
 
   // --- AI Activity Log State ---
@@ -51,13 +53,8 @@ function useDashboardState() {
     color: string;
     dotColor: string;
   }
-  const [activityLogs, setActivityLogs] = useState<ActivityLog[]>([
-    { time: "10:37:12", agent: "Risk AI", text: "Position check passed", color: "#ef4444", dotColor: "#10b981" },
-    { time: "10:37:09", agent: "EA Bot", text: "Order submitted BTCUSDT Long 0.02", color: "#6366f1", dotColor: "#3b82f6" },
-    { time: "10:36:58", agent: "Strategy AI", text: "Generated Long signal Confidence: 78%", color: "#fbbf24", dotColor: "#a855f7" },
-    { time: "10:36:41", agent: "Market Scanner", text: "Found 3 opportunities", color: "#06b6d4", dotColor: "#22d3ee" },
-    { time: "10:36:30", agent: "News AI", text: "No high impact news", color: "#f97316", dotColor: "#fbbf24" }
-  ]);
+  // Starts empty — populated live from WS price ticks / signal events.
+  const [activityLogs, setActivityLogs] = useState<ActivityLog[]>([]);
 
   const addActivityLog = (agent: string, text: string, dotColor = "#10b981") => {
     const timeStr = new Date().toTimeString().split(" ")[0];
@@ -108,12 +105,8 @@ function useDashboardState() {
     riskPct: 1.5
   });
 
-  // --- ข้อมูลข่าวสารเศรษฐกิจมหภาคจริง ---
-  const [newsFeed, setNewsFeed] = useState<any[]>([
-    { time: "02:15", source: "FED Watch", text: "ประธาน FED ส่งสัญญาณแนวโน้มปรับลดดอกเบี้ยนโยบายปลายปีนี้ หากดัชนีเงินเฟ้อลดต่ำลงตามเป้าหมาย 2%", impact: "HIGH" },
-    { time: "01:30", source: "Binance Research", text: "ปริมาณการซื้อขายเหรียญ SOL ทะยานขึ้นสูงสุดในรอบ 3 เดือน รับอานิสงส์จากการทำธุรกรรม DeFi บนเครือข่ายที่พุ่งสูง", impact: "MEDIUM" },
-    { time: "00:45", source: "NVIDIA Corp", text: "NVIDIA ประกาศชิป AI รุ่นสถาปัตยกรรมใหม่ที่มีกำลังประมวลผลสูงขึ้น 4 เท่า หุ้นพุ่งทะลุ 3.5% นำดัชนี Nasdaq ดีดตัว", impact: "HIGH" }
-  ]);
+  // --- ข่าวสารเศรษฐกิจมหภาค (ดึงสดจาก /api/news ตอน mount) ---
+  const [newsFeed, setNewsFeed] = useState<any[]>([]);
 
   // --- อ้างอิงสำหรับ Canvas และ WebSocket ---
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -189,7 +182,8 @@ function useDashboardState() {
       if (data.nan_logs) setNanLogs(data.nan_logs);
       if (data.calibration) setCalibration(data.calibration);
       if (data.correlation_rejections) setCorrelationRejections(data.correlation_rejections);
-      
+      if (data.data_sources) setDataSources(data.data_sources);
+
       // ดึงคอนฟิกการตั้งค่า
       if (data.settings) {
         setSettingsForm({
@@ -248,16 +242,6 @@ function useDashboardState() {
     return "ceo";
   };
 
-  const mapJournalTypeToAgent = (type: string): string => {
-    const t = type.toLowerCase();
-    if (t.includes("market") || t.includes("snapshot")) return "chart";
-    if (t.includes("analysis")) return "ceo";
-    if (t.includes("trade") || t.includes("order")) return "ea";
-    if (t.includes("risk")) return "risk";
-    if (t.includes("settings") || t.includes("mode") || t.includes("system") || t.includes("pause")) return "system";
-    return "system";
-  };
-
   useEffect(() => {
     const connectWebSocket = () => {
       setWsStatus("connecting");
@@ -272,55 +256,10 @@ function useDashboardState() {
       ws.onmessage = (e) => {
         const msg = JSON.parse(e.data);
 
-        if (msg.type === "init") {
-          const s = msg.state;
-          setSymbol(s.symbol);
-          setLatestPrice(s.latest);
-          setIndicators(s.indicators);
-          setSignal(s.signal);
-          setRisk(s.risk);
-          setMode(s.mode);
-          setBalances(s.balances || []);
-          setOrders(s.orders || []);
-          
-          if (s.feature_flags) setFeatureFlags(s.feature_flags);
-          if (s.circuit_breaker) setCircuitBreakers(s.circuit_breaker);
-          if (s.heartbeats) setHeartbeats(s.heartbeats);
-          if (s.nan_logs) setNanLogs(s.nan_logs);
-          if (s.calibration) setCalibration(s.calibration);
-          if (s.correlation_rejections) setCorrelationRejections(s.correlation_rejections);
-
-          if (s.journal && s.journal.length > 0) {
-            const initialChats = s.journal.map((j: any) => {
-              const agentKey = mapJournalTypeToAgent(j.type);
-              const config = AGENT_CHAT_MAP[agentKey] || AGENT_CHAT_MAP["system"];
-              const date = new Date(j.at);
-              const timeStr = date.getHours().toString().padStart(2, "0") + ":" + date.getMinutes().toString().padStart(2, "0");
-              return {
-                ...config,
-                text: j.detail,
-                time: timeStr
-              };
-            });
-            setChatMsgs(initialChats.reverse());
-          }
-        } 
-        else if (msg.type === "market_update") {
-          setSymbol(msg.symbol);
-          setLatestPrice(msg.latest);
-          setIndicators(msg.indicators);
-          setSignal(msg.signal);
-          setRisk(msg.risk);
-          setMode(msg.mode);
-          
-          if (msg.feature_flags) setFeatureFlags(msg.feature_flags);
-          if (msg.circuit_breaker) setCircuitBreakers(msg.circuit_breaker);
-          if (msg.heartbeats) setHeartbeats(msg.heartbeats);
-          if (msg.nan_logs) setNanLogs(msg.nan_logs);
-          if (msg.calibration) setCalibration(msg.calibration);
-          if (msg.correlation_rejections) setCorrelationRejections(msg.correlation_rejections);
-        } 
-        else if (msg.type === "price_tick") {
+        // NOTE: initial state comes from REST GET /api/state (fetchStateData on
+        // mount). The backend ws_bridge only streams the incremental message
+        // types handled below — it never sends "init"/"market_update".
+        if (msg.type === "price_tick") {
           if (msg.symbol === symbolRef.current) {
             setLatestPrice(msg.price);
           }
@@ -549,14 +488,35 @@ function useDashboardState() {
     }
   };
 
-  const handleApprove = async () => {
+  const handleApprove = async (override: boolean = false) => {
+    // Guard: onClick passes a MouseEvent — only a strict `true` means override.
+    const doOverride = override === true;
     try {
       const res = await fetch("http://localhost:8000/api/approve", {
-        method: "POST"
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ override: doOverride }),
       });
       const data = await res.json();
+
+      // Blocked by the risk gate — ask before overriding.
+      if (data.blocked) {
+        const reasons = (data.reasons || []).map((r: string) => `• ${r}`).join("\n");
+        const ok = window.confirm(
+          `⚠️ ออเดอร์นี้ติดกฎความปลอดภัย:\n${reasons}\n\nยืนยันเปิดออเดอร์แบบ OVERRIDE (ข้ามกฎเหล็ก) หรือไม่?`,
+        );
+        if (ok) return handleApprove(true);
+        addChatMessage("system", "❌ ยกเลิกการเปิดออเดอร์ (ติดกฎความปลอดภัย)");
+        return;
+      }
+
       if (data.status === "success") {
-        addChatMessage("system", "✅ อนุมัติยิงคำสั่งเทรดเรียบร้อย สั่งการ EA และบันทึก ERP ทันที");
+        addChatMessage(
+          "system",
+          data.overridden
+            ? "⚠️ เปิดออเดอร์แบบ MANUAL OVERRIDE (ข้ามกฎความปลอดภัย) แล้ว — บันทึก audit เรียบร้อย"
+            : "✅ อนุมัติยิงคำสั่งเทรดเรียบร้อย สั่งการ EA และบันทึก ERP ทันที",
+        );
         fetchStateData();
         fetchERPData();
       }
@@ -658,6 +618,8 @@ function useDashboardState() {
     setCalibration,
     correlationRejections,
     setCorrelationRejections,
+    dataSources,
+    setDataSources,
     signalActivity,
     setSignalActivity,
     activityLogs,

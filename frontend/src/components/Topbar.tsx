@@ -4,9 +4,20 @@ import { useState } from "react";
 import { useDashboard } from "@/context/DashboardContext";
 
 export default function Topbar() {
-  const { todayPnLSum, pnlPct, totalEquity, closedOrders, activeTradesCount, riskForm, taxSummary, signalActivity } = useDashboard();
+  const { todayPnLSum, pnlPct, totalEquity, closedOrders, activeTradesCount, riskForm, taxSummary, signalActivity, symbol, dataSources, wsStatus } = useDashboard();
   const [notifOpen, setNotifOpen] = useState(false);
   const notifCount = signalActivity.length;
+
+  // Feed health badge for the active symbol (live/stale/mock/offline).
+  const feed = dataSources[symbol];
+  const FEED_STYLE: Record<string, { dot: string; text: string; label: string }> = {
+    live: { dot: "#10b981", text: "text-[#10b981]", label: "LIVE" },
+    stale: { dot: "#fbbf24", text: "text-[#fbbf24]", label: "STALE" },
+    mock: { dot: "#a855f7", text: "text-[#a855f7]", label: "MOCK" },
+    offline: { dot: "#6b7280", text: "text-[#9ca3af]", label: "OFFLINE" },
+  };
+  const feedStyle = FEED_STYLE[feed?.status ?? "offline"] ?? FEED_STYLE.offline;
+  const wsConnected = wsStatus === "connected";
 
   return (
     <header className="bg-[#070a0f] border-b border-[#26262b] flex items-center justify-between px-4 h-[52px] flex-shrink-0">
@@ -76,9 +87,19 @@ export default function Topbar() {
           </div>
         )}
 
-        <div className="flex items-center gap-1.5 bg-[#0d2a14]/30 border border-[#1a5a28]/40 px-2.5 py-0.5 rounded-full text-[10px] text-[#10b981] font-bold font-mono">
-          <span className="w-1.5 h-1.5 rounded-full bg-[#10b981] shadow-[0_0_5px_#10b981]"></span>
-          WS Connected
+        {/* Data-source / feed health badge for the active symbol */}
+        <div
+          className={`flex items-center gap-1.5 bg-black/30 border border-[#26262b] px-2.5 py-0.5 rounded-full text-[10px] font-bold font-mono ${feedStyle.text}`}
+          title={feed?.source ? `${feed.source}${feed.age != null ? ` · ${feed.age}s ago` : ""}` : "no feed"}
+        >
+          <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: feedStyle.dot, boxShadow: `0 0 5px ${feedStyle.dot}` }}></span>
+          {symbol} {feedStyle.label}
+        </div>
+
+        {/* WS connection — reflects real status (was hardcoded) */}
+        <div className={`flex items-center gap-1.5 border px-2.5 py-0.5 rounded-full text-[10px] font-bold font-mono ${wsConnected ? "bg-[#0d2a14]/30 border-[#1a5a28]/40 text-[#10b981]" : "bg-[#2a0d0d]/30 border-[#5a1a1a]/40 text-[#f87171]"}`}>
+          <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: wsConnected ? "#10b981" : "#f87171", boxShadow: `0 0 5px ${wsConnected ? "#10b981" : "#f87171"}` }}></span>
+          {wsConnected ? "WS Connected" : "WS Offline"}
         </div>
 
         {/* Bell notification */}

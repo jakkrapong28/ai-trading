@@ -5,8 +5,9 @@ import crypto from 'crypto';
 // Protects all routes except GET /health
 // ─────────────────────────────────────────────────────────
 export function apiKeyAuth(req, res, next) {
-  // Public routes exempt from auth
-  const publicPaths = ['/health', '/health/deep'];
+  // Public routes exempt from auth (incl. Prometheus scrape — aggregate counts,
+  // no secrets, and scrapers can't send a custom X-Api-Key easily).
+  const publicPaths = ['/health', '/health/deep', '/metrics/prometheus'];
   if (publicPaths.includes(req.path) && req.method === 'GET') {
     return next();
   }

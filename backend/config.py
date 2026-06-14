@@ -32,6 +32,18 @@ ACCOUNT_DISPLAY_SPLITS = {
     "ONCHAIN_WALLET": 0.18,
 }
 
+# Broker commission charged on close, expressed as a fraction of the traded
+# notional value (lot × contractSize × price). Deterministic — never random.
+# Per asset class so crypto taker fees (~0.075%) differ from FX/metal spreads.
+# Override a single class via env COMMISSION_RATE_<CLASS> (e.g. COMMISSION_RATE_CRYPTO).
+COMMISSION_RATE = {
+    "metal": float(os.getenv("COMMISSION_RATE_METAL", "0.00008")),
+    "forex": float(os.getenv("COMMISSION_RATE_FOREX", "0.00005")),
+    "crypto": float(os.getenv("COMMISSION_RATE_CRYPTO", "0.00075")),
+    "stock": float(os.getenv("COMMISSION_RATE_STOCK", "0.00035")),
+    "index": float(os.getenv("COMMISSION_RATE_INDEX", "0.00005")),
+}
+
 FEATURE_FLAGS = {
     "circuit_breaker_v2": True,
     "rr_filter": True,

@@ -112,6 +112,73 @@ def detect_smc_concepts(df: pd.DataFrame, atr: float, ob_size_atr: float = 0.5, 
         "sr_level": sr_level
     }
 
+def detect_smc_levels(
+    df: pd.DataFrame,
+    atr: float,
+    ob_size_atr: float = 0.5,
+    fvg_gap_atr: float = 0.3,
+    swing_window: int = 5,
+) -> Dict[str, Any]:
+    """Geometry version of detect_smc_concepts — returns drawable PRICE levels
+    (not just booleans) so the dashboard can overlay them on the candle chart.
+
+    Returns: {order_blocks:[{top,bottom,kind}], fvgs:[{top,bottom,kind}],
+              swings:[{price,kind}], mss:{price,kind}|None}
+    """
+    out: Dict[str, Any] = {"order_blocks": [], "fvgs": [], "swings": [], "mss": None}
+    if df is None or len(df) < 20 or atr <= 0:
+        return out
+
+    close = float(df["close"].iloc[-1])
+    vol = df["volume"] if "volume" in df else pd.Series([1.0] * len(df), index=df.index)
+
+    swing_highs, swing_lows = detect_swing_levels(df, swing_window)
+    recent_highs = df["high"][swing_highs].tail(5)
+    recent_lows = df["low"][swing_lows].tail(5)
+
+    for p in recent_highs.tolist():
+        out["swings"].append({"price": float(p), "kind": "swing_high"})
+    for p in recent_lows.tolist():
+        out["swings"].append({"price": float(p), "kind": "swing_low"})
+
+    # Order Block — the impulsive candle at -2 (body >= ob_size_atr·ATR, high volume)
+    o2, c2 = float(df["open"].iloc[-2]), float(df["close"].iloc[-2])
+    body = abs(c2 - o2)
+    avg_vol = float(vol.tail(20).mean()) if len(vol) else 0.0
+    ob_vol = float(vol.iloc[-2])
+    if body >= ob_size_atr * atr and avg_vol > 0 and ob_vol >= 1.5 * avg_vol:
+        out["order_blocks"].append({
+            "top": float(df["high"].iloc[-2]),
+            "bottom": float(df["low"].iloc[-2]),
+            "kind": "bull" if c2 >= o2 else "bear",
+        })
+
+    # Fair Value Gap — 3-candle imbalance
+    if len(df) >= 3:
+        gap_bull = float(df["low"].iloc[-1] - df["high"].iloc[-3])
+        gap_bear = float(df["low"].iloc[-3] - df["high"].iloc[-1])
+        if gap_bull >= fvg_gap_atr * atr:
+            out["fvgs"].append({
+                "top": float(df["low"].iloc[-1]),
+                "bottom": float(df["high"].iloc[-3]),
+                "kind": "bull",
+            })
+        elif gap_bear >= fvg_gap_atr * atr:
+            out["fvgs"].append({
+                "top": float(df["low"].iloc[-3]),
+                "bottom": float(df["high"].iloc[-1]),
+                "kind": "bear",
+            })
+
+    # Market Structure Shift / BOS — close breaks the most recent swing extreme
+    if not recent_highs.empty and close > float(recent_highs.max()):
+        out["mss"] = {"price": float(recent_highs.max()), "kind": "bullish_bos"}
+    elif not recent_lows.empty and close < float(recent_lows.min()):
+        out["mss"] = {"price": float(recent_lows.min()), "kind": "bearish_bos"}
+
+    return out
+
+
 def calculate_signal_confidence(concepts: Dict[str, Any]) -> float:
     """Return confidence score based on combination-weighted logic.
     FVG-alone returns 0.0 (not tradeable).

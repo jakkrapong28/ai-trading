@@ -46,7 +46,40 @@ def _build_payload(event_type: str, event_data: dict, trade_id: str) -> dict:
                 "volume": event_data["lot_size"],
                 "lot_size": event_data["lot_size"],
                 "pnl": event_data.get("realized_pnl", 0),
-                "fee": 0.0,
+                "fee": event_data.get("fee", 0.0) or 0.0,
+            },
+        }
+    if event_type == "trade.partial_closed":
+        return {
+            "event": "trade.partial_closed",
+            "data": {
+                "trade_id": trade_id,
+                "symbol": event_data["ticker"],
+                "action": event_data.get("action"),
+                "price": event_data.get("exit_price", 0),
+                "volume": event_data.get("lot_size"),
+                "lot_size": event_data.get("lot_size"),
+                "pnl": event_data.get("realized_pnl", 0),
+                "fee": event_data.get("fee", 0.0) or 0.0,
+            },
+        }
+    if event_type == "trade.break_even":
+        return {
+            "event": "trade.break_even",
+            "data": {
+                "trade_id": trade_id,
+                "symbol": event_data["ticker"],
+                "price": event_data.get("price"),
+            },
+        }
+    if event_type == "trade.trailing_activated":
+        return {
+            "event": "trade.trailing_activated",
+            "data": {
+                "trade_id": trade_id,
+                "symbol": event_data["ticker"],
+                "price": event_data.get("price"),
+                "new_stop_loss": event_data.get("new_stop_loss"),
             },
         }
     return {"event": event_type, "data": {**event_data, "trade_id": trade_id}}

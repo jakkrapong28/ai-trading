@@ -4,6 +4,8 @@ Usage:
   python backend/backtest.py run XAUUSD
   python backend/backtest.py optimize
   python backend/backtest.py optimize BTCUSDT
+  python backend/backtest.py walkforward XAUUSD   # full report
+  python backend/backtest.py validate XAUUSD      # gate; exit 0=pass / 1=fail
 """
 import sys
 import os
@@ -37,6 +39,18 @@ BACKTEST_SYMBOLS = ["XAUUSD", "BTCUSDT", "ETHUSDT"]
 EQUITY = RISK_CONFIG["equity"]
 ATR_MULT = 2.0
 RR_RATIO = 2.0
+
+# Per-window OOS pass criteria for the walk-forward validation gate.
+WALK_FORWARD_PASS_CRITERIA = {
+    "sharpe_ratio": 1.0,
+    "profit_factor": 1.3,
+    "max_drawdown": 15.0,   # percent
+    "risk_of_ruin": 0.05,   # 5%
+}
+# A symbol passes the gate when at least this share of OOS windows pass, with a
+# minimum number of windows so a single lucky window can't green-light a flag.
+WALK_FORWARD_MIN_PASS_RATIO = 60.0
+WALK_FORWARD_MIN_WINDOWS = 3
 
 SPREAD_COST_DICT = {
     "XAUUSD": 25.0,
@@ -303,6 +317,86 @@ def run_walk_forward_backtest(df: pd.DataFrame, symbol: str, smc_strategy: bool 
         
     return results
 
+def evaluate_walk_forward(
+    results: List[Dict[str, Any]],
+    pass_criteria: Optional[Dict[str, float]] = None,
+    min_pass_ratio: float = WALK_FORWARD_MIN_PASS_RATIO,
+    min_windows: int = WALK_FORWARD_MIN_WINDOWS,
+) -> Dict[str, Any]:
+    """Pure gate evaluation over walk-forward OOS windows (no I/O — testable).
+
+    Returns pass/fail counts, the overall pass ratio, and a boolean `gate_pass`
+    that is True only when enough windows exist AND the ratio clears the bar.
+    """
+    pc = pass_criteria or WALK_FORWARD_PASS_CRITERIA
+    total = len(results)
+    passed = 0
+    verdicts: List[bool] = []
+    for res in results:
+        m = res["oos_metrics"]
+        pf = m.get("profit_factor", 0.0)
+        pf_pass = pf >= pc["profit_factor"] or pf == float("inf")
+        sharpe_pass = m.get("sharpe_ratio", 0.0) >= pc["sharpe_ratio"]
+        dd_pass = m.get("max_drawdown", 100.0) <= pc["max_drawdown"]
+        ror_pass = m.get("risk_of_ruin", 1.0) <= pc["risk_of_ruin"]
+        wp = bool(pf_pass and sharpe_pass and dd_pass and ror_pass)
+        verdicts.append(wp)
+        passed += wp
+    ratio = (passed / total * 100) if total > 0 else 0.0
+    gate_pass = total >= min_windows and ratio >= min_pass_ratio
+    return {
+        "total_windows": total,
+        "passed_windows": passed,
+        "pass_ratio": round(ratio, 1),
+        "gate_pass": gate_pass,
+        "window_verdicts": verdicts,
+        "enough_windows": total >= min_windows,
+    }
+
+
+def run_validate(symbols: List[str] = None, interval: str = "1h", range_val: str = "90d") -> int:
+    """Pre-flag / pre-deploy gate. Runs walk-forward per symbol and returns a
+    process exit code (0 = all symbols passed, 1 = any failed) so it can guard a
+    deploy step or the decision to flip an intelligence FEATURE_FLAG on.
+    """
+    symbols = symbols or BACKTEST_SYMBOLS
+    print("\n" + "=" * 80)
+    print("  WALK-FORWARD VALIDATION GATE (pre-flag / pre-deploy)")
+    print(f"  Criteria/window: Sharpe>={WALK_FORWARD_PASS_CRITERIA['sharpe_ratio']}, "
+          f"PF>={WALK_FORWARD_PASS_CRITERIA['profit_factor']}, "
+          f"MaxDD<={WALK_FORWARD_PASS_CRITERIA['max_drawdown']}%, "
+          f"Ruin<={WALK_FORWARD_PASS_CRITERIA['risk_of_ruin']*100:.0f}%  |  "
+          f"Gate: >={WALK_FORWARD_MIN_PASS_RATIO:.0f}% of >={WALK_FORWARD_MIN_WINDOWS} windows")
+    print("=" * 80)
+
+    overall_pass = True
+    for sym in symbols:
+        yf_sym = YAHOO_SYMBOL_MAP.get(sym, sym)
+        try:
+            df = asyncio.run(fetch_backtest_data(yf_sym, interval, range_val))
+        except Exception as e:
+            print(f"  {sym:<8} [ERROR] fetch failed: {e} → FAIL")
+            overall_pass = False
+            continue
+        if len(df) < 700:
+            print(f"  {sym:<8} [SKIP→FAIL] insufficient data ({len(df)} bars, need >=700)")
+            overall_pass = False
+            continue
+
+        results = run_walk_forward_backtest(df, sym, smc_strategy=True)
+        ev = evaluate_walk_forward(results)
+        status = "PASS 🟢" if ev["gate_pass"] else "FAIL 🔴"
+        note = "" if ev["enough_windows"] else " (too few windows)"
+        print(f"  {sym:<8} {ev['passed_windows']}/{ev['total_windows']} windows "
+              f"({ev['pass_ratio']:.1f}%) → {status}{note}")
+        overall_pass = overall_pass and ev["gate_pass"]
+
+    print("-" * 80)
+    print(f"  GATE RESULT: {'PASS 🟢 — safe to proceed' if overall_pass else 'FAIL 🔴 — do NOT enable flag / deploy'}")
+    print("=" * 80)
+    return 0 if overall_pass else 1
+
+
 def _precompute_bars(df: pd.DataFrame, symbol: str, use_mtf: bool = True) -> List[Dict]:
     bars = []
     warmup = 50
@@ -493,12 +587,7 @@ def run_walk_forward_report(symbols: List[str] = None, interval: str = "1h", ran
     print("  WALK-FORWARD BACKTEST & SMC SWEEP PARAMETER OPTIMIZATION")
     print("="*80)
     
-    pass_criteria = {
-        "sharpe_ratio": 1.0,
-        "profit_factor": 1.3,
-        "max_drawdown": 15.0, # 15%
-        "risk_of_ruin": 0.05, # 5%
-    }
+    pass_criteria = WALK_FORWARD_PASS_CRITERIA
     
     for sym in symbols:
         yf_sym = YAHOO_SYMBOL_MAP.get(sym, sym)
@@ -572,6 +661,9 @@ if __name__ == "__main__":
     elif cmd == "walkforward":
         syms = [sym_arg] if sym_arg and sym_arg in BACKTEST_SYMBOLS else BACKTEST_SYMBOLS
         run_walk_forward_report(syms)
+    elif cmd == "validate":
+        syms = [sym_arg] if sym_arg and sym_arg in BACKTEST_SYMBOLS else BACKTEST_SYMBOLS
+        sys.exit(run_validate(syms))
     elif cmd == "run":
         if sym_arg and sym_arg in BACKTEST_SYMBOLS:
             yf = YAHOO_SYMBOL_MAP.get(sym_arg, sym_arg)
@@ -581,4 +673,5 @@ if __name__ == "__main__":
         else:
             run_full_report()
     else:
-        print("Usage: python backend/backtest.py [run|optimize|walkforward] [XAUUSD|BTCUSDT|ETHUSDT]")
+        print("Usage: python backend/backtest.py [run|optimize|walkforward|validate] [XAUUSD|BTCUSDT|ETHUSDT]")
+        print("  validate → walk-forward gate; exit code 0=pass, 1=fail (use before enabling a flag / deploy)")
