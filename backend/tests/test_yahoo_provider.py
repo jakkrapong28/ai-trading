@@ -1,5 +1,5 @@
 """Stocks → real prices via free Yahoo feed (no API key)."""
-from backend.engines.providers.yahoo import parse_chart_price, YAHOO_STOCKS, YahooProvider
+from backend.engines.providers.yahoo import parse_chart_price, YAHOO_SYMBOLS, YahooProvider
 from unittest.mock import MagicMock
 
 
@@ -23,5 +23,5 @@ def test_provider_enabled_without_key():
 
 
 def test_covers_requested_stocks():
-    for s in ("AAPL", "NVDA", "TSLA", "MSFT", "AMZN"):
-        assert s in YAHOO_STOCKS
+    for s in ("AAPL", "NVDA", "TSLA", "MSFT", "AMZN", "XAUUSD"):
+        assert s in YAHOO_SYMBOLS

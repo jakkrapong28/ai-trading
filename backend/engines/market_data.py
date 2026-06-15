@@ -1,9 +1,9 @@
 """Market Data Engine — multi-source router with automatic failover.
 
 Architecture (see engines/providers/):
-  crypto (BTC/ETH/SOL/BNB) -> Binance WS                -> mock gap-filler
-  stock  (AAPL/NVDA/...)    -> TwelveData -> Finnhub -> MT5 bridge -> mock
-  metal  (XAUUSD)           -> TwelveData -> MT5 bridge          -> mock
+  crypto (BTC/ETH/SOL/BNB) -> Binance spot WS                    -> mock gap-filler
+  stock  (AAPL/NVDA/...)    -> TwelveData -> Finnhub -> Yahoo poll -> mock
+  metal  (XAUUSD)           -> Binance futures WS (XAUUSDT perp) -> Yahoo poll (GC=F) -> mock
 
 All real providers run concurrently and write through the single `emit_tick`
 path. The mock provider only fills gaps for symbols whose real feed has gone
@@ -30,6 +30,7 @@ from backend.engines.providers.base import (  # noqa: F401
 )
 from backend.engines.providers import (
     BinanceProvider,
+    BinanceGoldProvider,
     TwelveDataProvider,
     FinnhubProvider,
     MT5BridgeProvider,
@@ -87,6 +88,7 @@ def start_market_data_engine(event_bus: EventBus):
     """
     providers = [
         BinanceProvider(event_bus),
+        BinanceGoldProvider(event_bus),
         TwelveDataProvider(event_bus),
         FinnhubProvider(event_bus),
         MT5BridgeProvider(event_bus),

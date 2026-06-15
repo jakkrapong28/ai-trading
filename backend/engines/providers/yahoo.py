@@ -25,9 +25,13 @@ from backend.engines.providers.base import (
 
 logger = logging.getLogger("market-data.yahoo")
 
-# Internal ticker -> Yahoo symbol (US stocks map 1:1).
-YAHOO_STOCKS = {
+# Internal ticker -> Yahoo symbol. US stocks map 1:1; gold uses the GC=F
+# futures chart (the same symbol the candles bootstrap from in candle_manager),
+# so XAUUSD gets a real free price instead of falling through to the mock feed
+# (TwelveData's free WS rejects XAU/USD, leaving mock as the only gold source).
+YAHOO_SYMBOLS = {
     "AAPL": "AAPL", "NVDA": "NVDA", "TSLA": "TSLA", "MSFT": "MSFT", "AMZN": "AMZN",
+    "XAUUSD": "GC=F",
 }
 HALF_SPREAD = 0.0005  # synthesize bid/ask around the real price
 POLL_SECONDS = float(os.getenv("YAHOO_POLL_SECONDS", "12"))
@@ -72,11 +76,11 @@ class YahooProvider(MarketDataProvider):
             return None
 
     async def stream(self) -> None:
-        logger.info(f"Yahoo stock provider active for {list(YAHOO_STOCKS)} (no key, real prices).")
+        logger.info(f"Yahoo provider active for {list(YAHOO_SYMBOLS)} (no key, real prices).")
         async with httpx.AsyncClient(timeout=10.0) as client:
             while True:
                 try:
-                    for ticker, ysym in YAHOO_STOCKS.items():
+                    for ticker, ysym in YAHOO_SYMBOLS.items():
                         data = latest_prices.get(ticker)
                         if (
                             data

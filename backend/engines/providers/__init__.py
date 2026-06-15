@@ -5,7 +5,7 @@ from backend.engines.providers.base import (
     latest_prices,
     price_age,
 )
-from backend.engines.providers.binance import BinanceProvider
+from backend.engines.providers.binance import BinanceProvider, BinanceGoldProvider
 from backend.engines.providers.twelvedata import TwelveDataProvider
 from backend.engines.providers.finnhub import FinnhubProvider
 from backend.engines.providers.mt5_bridge import MT5BridgeProvider
@@ -19,6 +19,7 @@ __all__ = [
     "latest_prices",
     "price_age",
     "BinanceProvider",
+    "BinanceGoldProvider",
     "TwelveDataProvider",
     "FinnhubProvider",
     "MT5BridgeProvider",

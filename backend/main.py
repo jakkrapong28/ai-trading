@@ -632,14 +632,20 @@ async def websocket_bridge():
                         agent_name = "Risk AI"
                     elif "EXEC" in log_type:
                         agent_name = "EA Bot"
-                    
+
+                    # Prefix the symbol so each message is unambiguous (the same
+                    # RSI/resistance numbers recur across tickers — e.g. ETH ~1775
+                    # vs gold ~4350 — and without the symbol they get confused).
+                    ticker = msg.get("ticker")
+                    chat_message = f"[{ticker}] {detail}" if ticker and detail else detail
+
                     await manager.broadcast({
                         "type": "agent_typing",
                         "message": {
                             "agent": agent_name,
                             "role": "ผู้นำบัญชาการ",
                             "avatar": "🕴️" if agent_name == "CEO Agent" else "🤖",
-                            "message": detail,
+                            "message": chat_message,
                             "timestamp": datetime.now().isoformat()
                         }
                     })
