@@ -161,8 +161,23 @@ class StrategyEngine:
                         
                     regime = self.current_regimes.get(ticker)
                     if not regime:
-                        logger.debug(f"[Strategy] Skipping {ticker}: no regime data.")
-                        continue
+                        # Don't skip — compute the regime live from H1 candles so
+                        # analysis still runs on the data we have (no step skipped
+                        # just because the regime event hasn't arrived this cycle).
+                        cm_r = candle_managers.get(ticker)
+                        h1r = cm_r.get_ohlc("H1", bars=200) if cm_r is not None else None
+                        if h1r is not None and len(h1r) >= 50:
+                            from backend.engines.market_regime import calculate_regime_from_h1
+                            rn, _, ts, atr_v, vs = calculate_regime_from_h1(h1r)
+                            regime = MarketRegimeEvent(
+                                ticker=ticker, regime=rn, volatility_score=vs,
+                                trend_strength=ts, atr=atr_v,
+                            )
+                            self.current_regimes[ticker] = regime
+                            logger.info(f"[Strategy] {ticker}: computed regime live from candles → {rn}")
+                        else:
+                            logger.debug(f"[Strategy] {ticker}: no regime event and insufficient candles ({0 if h1r is None else len(h1r)}).")
+                            continue
                         
                     news = self.latest_news.get(ticker)
                     news_score_val = news.final_news_score if news else 50.0 
@@ -251,37 +266,39 @@ class StrategyEngine:
                                 "final": conf * 100
                             }
                     else:
-                        # Fallback: Multi-factor rule-based strategy
-                        trend_score = min(max((regime.trend_strength + 100) / 2.0, 0), 100)
-                        momentum_score = trend_score
-                        volume_score = 50.0
-                        news_score = news_score_val
-                        vol_score = min(regime.volatility_score, 100.0)
-                        
-                        final_score = (
-                            (trend_score * 0.30) +
-                            (momentum_score * 0.25) +
-                            (volume_score * 0.15) +
-                            (news_score * 0.20) +
-                            (vol_score * 0.10)
+                        # UNIFIED signal — the SAME evaluate_strategy_rules the
+                        # dashboard and backtest use (one brain, regime-aware incl.
+                        # the asset-class reversal gate). Replaces the separate,
+                        # cruder multi-factor path that diverged from what we test.
+                        from backend.core import get_market_indicators, evaluate_strategy_rules, compute_macro_trend_from_closes
+                        cm_sig = candle_managers.get(ticker)
+                        h1 = cm_sig.get_ohlc("H1", bars=160) if cm_sig is not None else None
+                        if h1 is None or len(h1) < 30:
+                            continue  # need real candles to compute a signal
+                        indicators = get_market_indicators(h1, ticker)
+                        macro_1h = compute_macro_trend_from_closes(h1["close"].astype(float).tolist())
+                        sig = evaluate_strategy_rules(
+                            indicators, ticker, macro_trend_1h=macro_1h, regime=regime.regime
                         )
-                        
-                        if final_score >= 70:
-                            signal_type = "BUY"
-                        elif final_score <= 30:
-                            signal_type = "SELL"
-                            
-                        if signal_type != "HOLD":
-                            conf = abs(final_score - 50) / 50.0
-                            reasoning = f"คะแนนวิเคราะห์ภาพรวม {final_score:.1f} กระตุ้นสัญญาณ {signal_type} | เทรนด์: {trend_score:.1f}, ข่าว: {news_score:.1f}"
-                            breakdown = {
-                                "trend": trend_score,
-                                "momentum": momentum_score,
-                                "volume": volume_score,
-                                "news": news_score,
-                                "volatility": vol_score,
-                                "final": final_score
-                            }
+                        signal_type = sig["action"] if sig["action"] in ("BUY", "SELL") else "HOLD"
+                        conf = float(sig["confidence"])
+                        reasoning = sig["reason"]
+
+                        # Real per-domain breakdown for the AI committee to read.
+                        rsi = float(indicators.get("rsi", 50.0))
+                        hist = float((indicators.get("macd") or {}).get("histogram", 0.0))
+                        momentum_score = max(0.0, min(100.0, rsi + (10 if hist > 0 else -10 if hist < 0 else 0)))
+                        vr = float((indicators.get("volume") or {}).get("ratio", 1.0))
+                        volume_score = max(0.0, min(100.0, 50.0 + (vr - 1.0) * 50.0))
+                        trend_score = min(max((regime.trend_strength + 100) / 2.0, 0), 100)
+                        breakdown = {
+                            "trend": trend_score,
+                            "momentum": momentum_score,
+                            "volume": volume_score,
+                            "news": news_score_val,
+                            "volatility": min(regime.volatility_score, 100.0),
+                            "final": conf * 100,
+                        }
                             
                     if signal_type != "HOLD":
                         # Log signal to database if SMCSignalLog exists

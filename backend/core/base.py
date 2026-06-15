@@ -478,7 +478,11 @@ RSI_THRESHOLDS = {
 def evaluate_reversal(indicators: Dict[str, Any], symbol: str, cfg: Optional[Dict] = None, regime: Optional[str] = None) -> Dict[str, Any]:
     """กลยุทธ์ reversal — RSI extreme + location + MACD + volume confirmation"""
     cfg = cfg or get_strategy_config(symbol)
-    if regime and regime in RSI_THRESHOLDS:
+    # Crypto keeps its per-symbol CALIBRATED thresholds (the generic regime
+    # override degraded BTC/ETH in backtest). Trending instruments (metals/
+    # forex/stocks) get regime-adaptive RSI thresholds.
+    is_crypto = SYMBOLS.get(symbol, {}).get("assetClass") == "crypto"
+    if regime and regime in RSI_THRESHOLDS and not is_crypto:
         oversold = RSI_THRESHOLDS[regime]["oversold"]
         overbought = RSI_THRESHOLDS[regime]["overbought"]
         cfg = cfg.copy()
@@ -489,8 +493,16 @@ def evaluate_reversal(indicators: Dict[str, Any], symbol: str, cfg: Optional[Dic
     ctx = _indicator_context(indicators)
     vol_ok = ctx["vol_ratio"] >= cfg["volume_confirm_min"]
 
+    # Regime gate (asset-class aware, see is_crypto above). Counter-trend
+    # mean-reversion bleeds on trending instruments (gold -$6.5k→-$0.1k when
+    # gated) but is a real edge on crypto (gating BTC +$1.4k→-$3.1k). Gate
+    # only non-crypto.
+    block_sell = regime == "BULL" and not is_crypto
+    block_buy = regime == "BEAR" and not is_crypto
+
     # Early SELL: RSI > threshold + BB Upper + MACD weakening (+ volume)
-    if (ctx["rsi_val"] > cfg["rsi_sell_early"]
+    if (not block_sell
+            and ctx["rsi_val"] > cfg["rsi_sell_early"]
             and ctx["near_bb_upper"]
             and ctx["macd_weakening"]):
         confs = ["rsi_overbought", "bb_upper", "macd_weakening"]
@@ -510,7 +522,7 @@ def evaluate_reversal(indicators: Dict[str, Any], symbol: str, cfg: Optional[Dic
         }
 
     # Full SELL reversal
-    if ctx["rsi_val"] > cfg["rsi_sell_full"] and ctx["near_resistance"]:
+    if not block_sell and ctx["rsi_val"] > cfg["rsi_sell_full"] and ctx["near_resistance"]:
         confs = ["rsi_extreme", "resistance"]
         confidence = 0.70
         if vol_ok:
@@ -528,7 +540,8 @@ def evaluate_reversal(indicators: Dict[str, Any], symbol: str, cfg: Optional[Dic
         }
 
     # Early BUY reversal
-    if (ctx["rsi_val"] < cfg["rsi_buy_early"]
+    if (not block_buy
+            and ctx["rsi_val"] < cfg["rsi_buy_early"]
             and ctx["near_bb_lower"]
             and ctx["macd_strengthening"]):
         confs = ["rsi_oversold", "bb_lower", "macd_strengthening"]
@@ -548,7 +561,7 @@ def evaluate_reversal(indicators: Dict[str, Any], symbol: str, cfg: Optional[Dic
         }
 
     # Full BUY reversal
-    if ctx["rsi_val"] < cfg["rsi_buy_full"] and ctx["near_support"]:
+    if not block_buy and ctx["rsi_val"] < cfg["rsi_buy_full"] and ctx["near_support"]:
         confs = ["rsi_extreme", "support"]
         confidence = 0.70
         if vol_ok:

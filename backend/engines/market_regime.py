@@ -117,7 +117,11 @@ def calculate_regime_from_h1(df: pd.DataFrame) -> tuple:
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     rs = gain / loss
-    rsi = float(100 - (100 / (1 + rs)).iloc[-1]) if not rs.iloc[-1:] == 0 else 50.0
+    # BUG FIX: `rs.iloc[-1:] == 0` returned a Series → `not Series` raised
+    # ValueError, so this RSI (and the whole H1 regime) silently failed under
+    # the engine's try/except. Compare the scalar instead.
+    rs_last = rs.iloc[-1]
+    rsi = 50.0 if (pd.isna(rs_last) or rs_last == 0) else float(100 - (100 / (1 + rs_last)))
 
     ema_12 = close.ewm(span=12, adjust=False).mean()
     ema_26 = close.ewm(span=26, adjust=False).mean()

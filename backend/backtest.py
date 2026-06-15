@@ -208,6 +208,14 @@ def run_strategy_backtest(
         indicators = get_market_indicators(ohlc_window, symbol)
         macro = _macro_trend_at_bar(df, i) if use_mtf else None
 
+        # Real regime (same call the live engine uses) so the backtest exercises
+        # the regime-aware reversal gate — what we test == what trades live.
+        regime_at_bar = None
+        regime_window = df.iloc[max(0, i - 200):i + 1][["open", "high", "low", "close", "volume"]]
+        if len(regime_window) >= 50:
+            from backend.engines.market_regime import calculate_regime_from_h1
+            regime_at_bar, _, _, _, _ = calculate_regime_from_h1(regime_window)
+
         if cfg and cfg.get("smc_strategy", False):
             from backend.core.smc import detect_smc_concepts, calculate_signal_confidence
             atr = indicators["atr"]
@@ -235,7 +243,7 @@ def run_strategy_backtest(
             }
         else:
             signal = evaluate_strategy_rules(
-                indicators, symbol, macro, strategy_filter=strategy_filter, cfg=cfg
+                indicators, symbol, macro, strategy_filter=strategy_filter, cfg=cfg, regime=regime_at_bar
             )
 
         if signal["action"] not in ("BUY", "SELL"):
@@ -404,10 +412,19 @@ def _precompute_bars(df: pd.DataFrame, symbol: str, use_mtf: bool = True) -> Lis
         ohlc_window = df.iloc[max(0, i - 48):i + 1][["open", "high", "low", "close", "volume"]].copy()
         indicators = get_market_indicators(ohlc_window, symbol)
         macro = _macro_trend_at_bar(df, i) if use_mtf else None
+
+        # Real regime (same call the live engine uses) so the backtest exercises
+        # the regime-aware reversal gate — what we test == what trades live.
+        regime_at_bar = None
+        regime_window = df.iloc[max(0, i - 200):i + 1][["open", "high", "low", "close", "volume"]]
+        if len(regime_window) >= 50:
+            from backend.engines.market_regime import calculate_regime_from_h1
+            regime_at_bar, _, _, _, _ = calculate_regime_from_h1(regime_window)
         bars.append({
             "row": df.iloc[i],
             "indicators": indicators,
             "macro": macro,
+            "regime": regime_at_bar,
         })
     return bars
 
@@ -441,7 +458,7 @@ def _simulate_from_bars(
 
         signal = evaluate_strategy_rules(
             bar["indicators"], symbol, bar["macro"],
-            strategy_filter=strategy_filter, cfg=cfg,
+            strategy_filter=strategy_filter, cfg=cfg, regime=bar.get("regime"),
         )
         if signal["action"] not in ("BUY", "SELL"):
             continue

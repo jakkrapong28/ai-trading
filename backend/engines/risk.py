@@ -282,16 +282,29 @@ class RiskEngine:
                 
                 price = validate_price(price_data["last_price"], f"risk.py: last_price for {decision.ticker}")
                 
-                atr = price * 0.02 # Fallback 2%
-
+                atr = price * 0.02  # last-resort fallback 2%
                 regime = "SIDEWAYS"
-                from backend.engines.market_regime import calculate_indicators, ticker_data, calculate_regime
-                df = ticker_data.get(decision.ticker)
-                if df is not None and not df.empty:
-                    inds = calculate_indicators(df)
-                    atr = inds["atr"] or atr
-                    if len(df) >= 200:
-                        regime, _, _, _, _ = calculate_regime(df)
+
+                # Prefer REAL H1 true-range ATR + candle regime for SL/TP sizing.
+                # The tick-based proxy (std of returns) is only used when no H1
+                # candles exist yet — SL/TP must reflect real volatility.
+                from backend.core.candle_manager import candle_managers
+                from backend.core.base import calculate_atr_ohlc
+                from backend.engines.market_regime import calculate_regime_from_h1
+                cm = candle_managers.get(decision.ticker)
+                h1 = cm.get_ohlc("H1", bars=200) if cm is not None else None
+                if h1 is not None and len(h1) >= 20:
+                    atr = calculate_atr_ohlc(h1, 14) or atr
+                    if len(h1) >= 50:
+                        regime, _, _, _, _ = calculate_regime_from_h1(h1)
+                else:
+                    from backend.engines.market_regime import calculate_indicators, ticker_data, calculate_regime
+                    df = ticker_data.get(decision.ticker)
+                    if df is not None and not df.empty:
+                        inds = calculate_indicators(df)
+                        atr = inds["atr"] or atr
+                        if len(df) >= 200:
+                            regime, _, _, _, _ = calculate_regime(df)
 
                 atr = validate_atr(atr, decision.ticker, "risk.py: atr calculation")
 

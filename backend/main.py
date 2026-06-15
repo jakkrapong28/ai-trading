@@ -1009,7 +1009,20 @@ async def get_state():
 
     indicators = get_cached_indicators(current_symbol)
     regime = regime_managers[current_symbol].current_regime if current_symbol in regime_managers else None
-    signal = evaluate_strategy_rules(indicators, current_symbol, regime=regime)
+    # Compute macro_1h (and a live regime fallback) from H1 candles so the
+    # dashboard signal is identical to what the live strategy engine produces —
+    # same brain, same inputs, incl. the MTF filter + regime reversal gate.
+    macro_1h = None
+    cm_s = candle_managers.get(current_symbol)
+    if cm_s is not None:
+        h1s = cm_s.get_ohlc("H1", bars=200)
+        if h1s is not None and len(h1s) >= 50:
+            from backend.core.base import compute_macro_trend_from_closes
+            macro_1h = compute_macro_trend_from_closes(h1s["close"].astype(float).tolist())
+            if not regime:
+                from backend.engines.market_regime import calculate_regime_from_h1
+                regime = calculate_regime_from_h1(h1s)[0]
+    signal = evaluate_strategy_rules(indicators, current_symbol, macro_trend_1h=macro_1h, regime=regime)
 
     # Single source of truth for equity + deterministic broker spread.
     equity = await accounting.get_account_equity(latest_prices)
