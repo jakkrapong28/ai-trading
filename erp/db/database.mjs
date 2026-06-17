@@ -113,24 +113,38 @@ export async function initDb() {
     `);
 
     // audit_logs may have been created with old schema — ensure all columns exist and constraints are relaxed
-    try {
-      await client.query(`ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS event_type VARCHAR(100)`);
-      await client.query(`ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS user_agent TEXT`);
-      await client.query(`ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS ip_address VARCHAR(100)`);
-      await client.query(`ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS correlation_id VARCHAR(100)`);
-      await client.query(`ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS payload JSONB`);
-      await client.query(`ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()`);
-      
-      // Relax old schema NOT NULL constraints so ERP inserts can succeed
+    await client.query(`ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS event_type VARCHAR(100)`);
+    await client.query(`ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS user_agent TEXT`);
+    await client.query(`ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS ip_address VARCHAR(100)`);
+    await client.query(`ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS correlation_id VARCHAR(100)`);
+    await client.query(`ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS payload JSONB`);
+    await client.query(`ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()`);
+    
+    // Check if legacy column event_name exists, and relax NOT NULL if it does
+    const checkEventName = await client.query(`
+      SELECT EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name='audit_logs' AND column_name='event_name'
+      )
+    `);
+    if (checkEventName.rows[0].exists) {
       await client.query(`ALTER TABLE audit_logs ALTER COLUMN event_name DROP NOT NULL`);
+    }
+
+    // Check if legacy column actor exists, and relax NOT NULL if it does
+    const checkActor = await client.query(`
+      SELECT EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name='audit_logs' AND column_name='actor'
+      )
+    `);
+    if (checkActor.rows[0].exists) {
       await client.query(`ALTER TABLE audit_logs ALTER COLUMN actor DROP NOT NULL`);
-    } catch (_) { /* fresh table: columns created via CREATE TABLE above */ }
+    }
 
     // erp_delivery_records may have been created with Python schema — ensure all columns exist
-    try {
-      await client.query(`ALTER TABLE erp_delivery_records ADD COLUMN IF NOT EXISTS event VARCHAR(100)`);
-      await client.query(`ALTER TABLE erp_delivery_records ADD COLUMN IF NOT EXISTS payload JSONB`);
-    } catch (_) { /* fresh table: columns created via CREATE TABLE above */ }
+    await client.query(`ALTER TABLE erp_delivery_records ADD COLUMN IF NOT EXISTS event VARCHAR(100)`);
+    await client.query(`ALTER TABLE erp_delivery_records ADD COLUMN IF NOT EXISTS payload JSONB`);
 
 
 
