@@ -5,6 +5,7 @@ import { SYMBOLS_LIST } from "@/config/dashboard";
 import TradingViewWidget from "@/components/TradingViewWidget";
 import AIChartWidget from "@/components/AIChartWidget";
 import AIAnalysisPanel from "@/components/AIAnalysisPanel";
+import DailyPlanCard from "@/components/DailyPlanCard";
 import { useDashboard } from "@/context/DashboardContext";
 
 export default function TradingPage() {
@@ -107,6 +108,9 @@ export default function TradingPage() {
             {chartMode === "ai" ? <AIChartWidget symbol={symbol} tf={tf} /> : <TradingViewWidget symbol={symbol} />}
           </div>
         </div>
+
+        {/* ── ROW 1.5: DAILY TRADING PLAN ── */}
+        <DailyPlanCard symbol={symbol} />
 
         {/* ── ROW 2: WORKFORCE AGENTS ── */}
         <div className="grid grid-cols-6 gap-3">

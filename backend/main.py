@@ -1004,6 +1004,71 @@ async def get_smc(symbol: str = None, tf: str = "H1"):
     return await asyncio.to_thread(_build)
 
 
+@app.get("/api/daily-plan")
+async def get_daily_plan(symbol: str = None):
+    """Image-style daily trading plan, assembled from data the system already
+    computes: H1 bias + regime, SMC v2 directional/TIER signal, structural SL,
+    TP1/2/3 ladder, and the nearest swing support/resistance levels.
+    """
+    from backend.core.candle_manager import TIMEFRAMES  # noqa: F401
+    from backend.core.smc import detect_smc_levels, evaluate_smc_signal
+    from backend.core.base import calculate_atr_ohlc, compute_macro_trend_from_closes
+    from backend.core import get_market_indicators
+    from backend.engines.market_regime import calculate_regime_from_h1
+
+    sym = (symbol or current_symbol).upper()
+    cm = candle_managers.get(sym)
+    asof = datetime.now(timezone.utc).isoformat()
+
+    def _build():
+        df = cm.get_ohlc("H1", bars=200) if cm else None
+        if df is None or len(df) < 50:
+            return {"symbol": sym, "asof": asof, "ready": False,
+                    "reason": "ยังไม่มีแท่งเทียน H1 พอ (ต้องการ ≥50)"}
+        atr = calculate_atr_ohlc(df, 14)
+        price = float(df["close"].iloc[-1])
+        indicators = get_market_indicators(df, sym)
+        macro = compute_macro_trend_from_closes(df["close"].astype(float).tolist())
+        regime = calculate_regime_from_h1(df)[0]
+        sig = evaluate_smc_signal(df, atr, indicators, macro, regime)
+
+        levels = detect_smc_levels(df, atr)
+        swings = levels.get("swings", [])
+        highs = sorted({round(s["price"], 4) for s in swings if s["price"] > price})[:3]
+        lows = sorted({round(s["price"], 4) for s in swings if s["price"] < price}, reverse=True)[:3]
+
+        action = sig["action"]
+        plan = {
+            "symbol": sym, "asof": asof, "ready": True,
+            "price": round(price, 4), "atr": round(atr, 4),
+            "bias": {"h1": macro or "Sideways", "regime": regime or "RANGE"},
+            "setup": action, "tier": sig.get("tier"), "reason": sig["reason"],
+            "levels": {"resistance": highs, "support": lows},
+            "entry_zone": None, "stop_loss": None, "take_profits": [], "rr": None,
+        }
+        if action in ("BUY", "SELL"):
+            anchor = sig.get("sl_anchor")
+            if action == "BUY":
+                sl = anchor - 0.25 * atr if (anchor and anchor < price) else price - 2.0 * atr
+                entry_zone = [round(price - 0.25 * atr, 4), round(price + 0.10 * atr, 4)]
+            else:
+                sl = anchor + 0.25 * atr if (anchor and anchor > price) else price + 2.0 * atr
+                entry_zone = [round(price - 0.10 * atr, 4), round(price + 0.25 * atr, 4)]
+            r = abs(price - sl)
+            tps = [price + r * m if action == "BUY" else price - r * m for m in (1.0, 1.6, 2.4)]
+            plan.update({
+                "entry_zone": entry_zone,
+                "stop_loss": round(sl, 4),
+                "take_profits": [round(t, 4) for t in tps],
+                "rr": 2.4,
+            })
+        return plan
+
+    if cm is None:
+        return {"symbol": sym, "asof": asof, "ready": False, "reason": "ยังไม่มี candle manager สำหรับสัญลักษณ์นี้"}
+    return await asyncio.to_thread(_build)
+
+
 @app.get("/api/state")
 async def get_state():
     from backend.engines.market_regime import regime_managers

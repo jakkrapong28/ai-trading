@@ -51,6 +51,11 @@ WALK_FORWARD_PASS_CRITERIA = {
 # minimum number of windows so a single lucky window can't green-light a flag.
 WALK_FORWARD_MIN_PASS_RATIO = 60.0
 WALK_FORWARD_MIN_WINDOWS = 3
+# A window with fewer than this many OOS trades is statistically meaningless — a
+# 2-trade window can post Sharpe 2600 / PF 99 on pure luck. Such "thin" windows
+# can NEVER pass (they only ever make the gate stricter), so noise can't
+# green-light a flag. See the walk-forward report's tiny-trade windows.
+WALK_FORWARD_MIN_TRADES = 5
 
 SPREAD_COST_DICT = {
     "XAUUSD": 25.0,
@@ -97,13 +102,17 @@ def _macro_trend_at_bar(df: pd.DataFrame, i: int, lookback: int = 48) -> Optiona
     closes = df["close"].iloc[start:i + 1].astype(float).tolist()
     return compute_macro_trend_from_closes(closes)
 
-def calculate_risk_of_ruin(pnls: List[float], initial_equity: float = 45750.00, ruin_fraction: float = 0.3, num_paths: int = 5000, path_len: int = 50) -> float:
+def calculate_risk_of_ruin(pnls: List[float], initial_equity: float = 45750.00, ruin_fraction: float = 0.3, num_paths: int = 5000, path_len: int = 50, seed: int = 12345) -> float:
     if not pnls:
         return 0.0
     pnl_array = np.array(pnls)
     if len(pnl_array) == 0:
         return 0.0
-    choices = np.random.choice(pnl_array, size=(num_paths, path_len), replace=True)
+    # Seeded Monte Carlo so Risk-of-Ruin is REPRODUCIBLE — identical on any run
+    # and any machine (Mac/Windows) for the same trade list. Was np.random
+    # (global, unseeded) → a different number every run.
+    rng = np.random.default_rng(seed)
+    choices = rng.choice(pnl_array, size=(num_paths, path_len), replace=True)
     cum_pnls = np.cumsum(choices, axis=1)
     equity_paths = initial_equity + cum_pnls
     min_equity_per_path = np.min(equity_paths, axis=1)
@@ -113,24 +122,27 @@ def calculate_risk_of_ruin(pnls: List[float], initial_equity: float = 45750.00, 
 def optimize_smc_parameters(
     df: pd.DataFrame,
     symbol: str,
+    smc_v2: bool = False,
 ) -> Dict[str, Any]:
     best_score = -1.0
     best_cfg = {
         "smc_strategy": True,
+        "smc_v2": smc_v2,
         "ob_size_atr": 0.5,
         "fvg_gap_atr": 0.3,
         "mtf_strategy": True
     }
     best_result = None
-    
+
     # Sweep ob_size_atr from 0.4 to 0.7, fvg_gap_atr from 0.2 to 0.4
     ob_range = [0.4, 0.5, 0.6, 0.7]
     fvg_range = [0.2, 0.25, 0.3, 0.35, 0.4]
-    
+
     for ob in ob_range:
         for fvg in fvg_range:
             cfg = {
                 "smc_strategy": True,
+                "smc_v2": smc_v2,
                 "ob_size_atr": ob,
                 "fvg_gap_atr": fvg,
                 "mtf_strategy": True
@@ -170,6 +182,15 @@ def run_strategy_backtest(
     active_trade = None
     warmup = 50
 
+    # Backtest circuit breaker — mirrors the live circuit_breaker_v2 so the
+    # walk-forward sees realistic robustness: after `cb_max_losses` consecutive
+    # losers, stop opening trades for `cb_cooldown_bars` bars. Caps the
+    # catastrophic OOS windows the stateless live system would never sit through.
+    cb_max_losses = cfg.get("cb_max_losses", 0)
+    cb_cooldown_bars = cfg.get("cb_cooldown_bars", 24)
+    consec_losses = 0
+    cooldown_until = -1
+
     for i in range(warmup, len(df)):
         row = df.iloc[i]
 
@@ -199,9 +220,19 @@ def run_strategy_backtest(
                 })
                 active_trade = apply_trade_costs(active_trade, symbol)
                 trades.append(active_trade)
+                if active_trade["pnl"] < 0:
+                    consec_losses += 1
+                    if cb_max_losses and consec_losses >= cb_max_losses:
+                        cooldown_until = i + cb_cooldown_bars
+                else:
+                    consec_losses = 0
                 active_trade = None
 
         if active_trade:
+            continue
+
+        # Circuit-breaker cooldown — skip new entries while tripped.
+        if cb_max_losses and i < cooldown_until:
             continue
 
         ohlc_window = df.iloc[max(0, i - 48):i + 1][["open", "high", "low", "close", "volume"]].copy()
@@ -216,7 +247,24 @@ def run_strategy_backtest(
             from backend.engines.market_regime import calculate_regime_from_h1
             regime_at_bar, _, _, _, _ = calculate_regime_from_h1(regime_window)
 
-        if cfg and cfg.get("smc_strategy", False):
+        if cfg and cfg.get("smc_v2", False):
+            from backend.core.smc import evaluate_smc_signal
+            atr = indicators["atr"]
+            ob_size = cfg.get("ob_size_atr", 0.5)
+            fvg_gap = cfg.get("fvg_gap_atr", 0.3)
+            sig = evaluate_smc_signal(
+                ohlc_window, atr, indicators, macro, regime_at_bar,
+                ob_size_atr=ob_size, fvg_gap_atr=fvg_gap,
+                min_tier=cfg.get("smc_min_tier", "C"),
+                require_bias=cfg.get("smc_require_bias", False),
+            )
+            signal = {
+                "action": sig["action"],
+                "strategy_type": sig["strategy_type"],
+                "confidence": sig["confidence"],
+                "sl_anchor": sig.get("sl_anchor"),
+            }
+        elif cfg and cfg.get("smc_strategy", False):
             from backend.core.smc import detect_smc_concepts, calculate_signal_confidence
             atr = indicators["atr"]
             ob_size = cfg.get("ob_size_atr", 0.5)
@@ -255,8 +303,24 @@ def run_strategy_backtest(
         stop_dist = pos["stop_distance"]
 
         action = signal["action"]
+        lot = pos["lot"]
         sl = entry - stop_dist if action == "BUY" else entry + stop_dist
-        tp = entry + stop_dist * RR_RATIO if action == "BUY" else entry - stop_dist * RR_RATIO
+
+        # Structural stop (SMC v2): anchor SL beyond the zone/swing instead of a
+        # symmetric ATR box, then keep dollar-risk constant by scaling the lot.
+        # Reject anchors that are absurdly tight (<0.5·ATR) or wide (>2·ATR);
+        # fall back to the ATR stop there.
+        anchor = signal.get("sl_anchor")
+        if anchor is not None:
+            buffer = 0.25 * atr
+            cand = (anchor - buffer) if action == "BUY" else (anchor + buffer)
+            risk = (entry - cand) if action == "BUY" else (cand - entry)
+            if 0.5 * stop_dist <= risk <= 2.0 * stop_dist:
+                sl = cand
+                lot = pos["lot"] * stop_dist / risk
+
+        risk = abs(entry - sl)
+        tp = entry + risk * RR_RATIO if action == "BUY" else entry - risk * RR_RATIO
         active_trade = {
             "action": action,
             "strategy_type": signal.get("strategy_type", "UNKNOWN"),
@@ -264,7 +328,7 @@ def run_strategy_backtest(
             "entry_time": row["timestamp"],
             "stop_loss": sl,
             "take_profit": tp,
-            "lot": pos["lot"],
+            "lot": lot,
             "status": "OPEN",
         }
 
@@ -278,7 +342,7 @@ def run_strategy_backtest(
         "config": cfg,
     }
 
-def run_walk_forward_backtest(df: pd.DataFrame, symbol: str, smc_strategy: bool = True) -> List[Dict[str, Any]]:
+def run_walk_forward_backtest(df: pd.DataFrame, symbol: str, smc_strategy: bool = True, smc_v2: bool = False) -> List[Dict[str, Any]]:
     """Runs a Walk-Forward backtest with 500-bar rolling in-sample and 200-bar out-of-sample windows."""
     in_sample_len = 500
     oos_len = 200
@@ -299,7 +363,7 @@ def run_walk_forward_backtest(df: pd.DataFrame, symbol: str, smc_strategy: bool 
         
         # Optimize on In-Sample
         if smc_strategy:
-            opt_res = optimize_smc_parameters(in_sample_df, symbol)
+            opt_res = optimize_smc_parameters(in_sample_df, symbol, smc_v2=smc_v2)
         else:
             opt_res = optimize_rsi_thresholds(in_sample_df, symbol)
             
@@ -330,24 +394,35 @@ def evaluate_walk_forward(
     pass_criteria: Optional[Dict[str, float]] = None,
     min_pass_ratio: float = WALK_FORWARD_MIN_PASS_RATIO,
     min_windows: int = WALK_FORWARD_MIN_WINDOWS,
+    min_trades: int = WALK_FORWARD_MIN_TRADES,
 ) -> Dict[str, Any]:
     """Pure gate evaluation over walk-forward OOS windows (no I/O — testable).
 
     Returns pass/fail counts, the overall pass ratio, and a boolean `gate_pass`
     that is True only when enough windows exist AND the ratio clears the bar.
+
+    A window with fewer than ``min_trades`` OOS trades can never pass — its
+    Sharpe/PF are small-sample noise — so thin windows only ever tighten the
+    gate. Windows that omit ``trades_count`` (synthetic/unit-test inputs) skip
+    the trade-count check.
     """
     pc = pass_criteria or WALK_FORWARD_PASS_CRITERIA
     total = len(results)
     passed = 0
+    thin = 0
     verdicts: List[bool] = []
     for res in results:
         m = res["oos_metrics"]
+        tc = res.get("trades_count")
+        enough_trades = tc is None or tc >= min_trades
+        if tc is not None and tc < min_trades:
+            thin += 1
         pf = m.get("profit_factor", 0.0)
         pf_pass = pf >= pc["profit_factor"] or pf == float("inf")
         sharpe_pass = m.get("sharpe_ratio", 0.0) >= pc["sharpe_ratio"]
         dd_pass = m.get("max_drawdown", 100.0) <= pc["max_drawdown"]
         ror_pass = m.get("risk_of_ruin", 1.0) <= pc["risk_of_ruin"]
-        wp = bool(pf_pass and sharpe_pass and dd_pass and ror_pass)
+        wp = bool(enough_trades and pf_pass and sharpe_pass and dd_pass and ror_pass)
         verdicts.append(wp)
         passed += wp
     ratio = (passed / total * 100) if total > 0 else 0.0
@@ -355,6 +430,7 @@ def evaluate_walk_forward(
     return {
         "total_windows": total,
         "passed_windows": passed,
+        "thin_windows": thin,
         "pass_ratio": round(ratio, 1),
         "gate_pass": gate_pass,
         "window_verdicts": verdicts,
@@ -362,14 +438,14 @@ def evaluate_walk_forward(
     }
 
 
-def run_validate(symbols: List[str] = None, interval: str = "1h", range_val: str = "90d") -> int:
+def run_validate(symbols: List[str] = None, interval: str = "1h", range_val: str = "90d", smc_v2: bool = False) -> int:
     """Pre-flag / pre-deploy gate. Runs walk-forward per symbol and returns a
     process exit code (0 = all symbols passed, 1 = any failed) so it can guard a
     deploy step or the decision to flip an intelligence FEATURE_FLAG on.
     """
     symbols = symbols or BACKTEST_SYMBOLS
     print("\n" + "=" * 80)
-    print("  WALK-FORWARD VALIDATION GATE (pre-flag / pre-deploy)")
+    print(f"  WALK-FORWARD VALIDATION GATE (pre-flag / pre-deploy)  [{'SMC v2' if smc_v2 else 'SMC v1'}]")
     print(f"  Criteria/window: Sharpe>={WALK_FORWARD_PASS_CRITERIA['sharpe_ratio']}, "
           f"PF>={WALK_FORWARD_PASS_CRITERIA['profit_factor']}, "
           f"MaxDD<={WALK_FORWARD_PASS_CRITERIA['max_drawdown']}%, "
@@ -391,10 +467,12 @@ def run_validate(symbols: List[str] = None, interval: str = "1h", range_val: str
             overall_pass = False
             continue
 
-        results = run_walk_forward_backtest(df, sym, smc_strategy=True)
+        results = run_walk_forward_backtest(df, sym, smc_strategy=True, smc_v2=smc_v2)
         ev = evaluate_walk_forward(results)
         status = "PASS 🟢" if ev["gate_pass"] else "FAIL 🔴"
         note = "" if ev["enough_windows"] else " (too few windows)"
+        if ev.get("thin_windows"):
+            note += f" ({ev['thin_windows']} thin <{WALK_FORWARD_MIN_TRADES} trades)"
         print(f"  {sym:<8} {ev['passed_windows']}/{ev['total_windows']} windows "
               f"({ev['pass_ratio']:.1f}%) → {status}{note}")
         overall_pass = overall_pass and ev["gate_pass"]
@@ -645,11 +723,14 @@ def run_walk_forward_report(symbols: List[str] = None, interval: str = "1h", ran
             sharpe_pass = sharpe >= pass_criteria["sharpe_ratio"]
             dd_pass = max_dd <= pass_criteria["max_drawdown"]
             ror_pass = ror <= pass_criteria["risk_of_ruin"]
-            
-            window_passed = pf_pass and sharpe_pass and dd_pass and ror_pass
+            thin = res["trades_count"] < WALK_FORWARD_MIN_TRADES
+
+            window_passed = not thin and pf_pass and sharpe_pass and dd_pass and ror_pass
             if window_passed:
                 passed_windows += 1
                 verdict = "PASS 🟢"
+            elif thin:
+                verdict = "THIN ⚪"
             else:
                 verdict = "FAIL 🔴"
                 
@@ -681,6 +762,9 @@ if __name__ == "__main__":
     elif cmd == "validate":
         syms = [sym_arg] if sym_arg and sym_arg in BACKTEST_SYMBOLS else BACKTEST_SYMBOLS
         sys.exit(run_validate(syms))
+    elif cmd == "validate2":
+        syms = [sym_arg] if sym_arg and sym_arg in BACKTEST_SYMBOLS else BACKTEST_SYMBOLS
+        sys.exit(run_validate(syms, smc_v2=True))
     elif cmd == "run":
         if sym_arg and sym_arg in BACKTEST_SYMBOLS:
             yf = YAHOO_SYMBOL_MAP.get(sym_arg, sym_arg)
@@ -690,5 +774,6 @@ if __name__ == "__main__":
         else:
             run_full_report()
     else:
-        print("Usage: python backend/backtest.py [run|optimize|walkforward|validate] [XAUUSD|BTCUSDT|ETHUSDT]")
-        print("  validate → walk-forward gate; exit code 0=pass, 1=fail (use before enabling a flag / deploy)")
+        print("Usage: python backend/backtest.py [run|optimize|walkforward|validate|validate2] [XAUUSD|BTCUSDT|ETHUSDT]")
+        print("  validate  → walk-forward gate, SMC v1 (legacy EMA-direction); exit 0=pass, 1=fail")
+        print("  validate2 → walk-forward gate, SMC v2 (directional + TIER + structural SL — recommended)")

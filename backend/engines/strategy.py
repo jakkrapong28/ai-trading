@@ -198,73 +198,52 @@ class StrategyEngine:
                     
                     # 4. Evaluate using SMC/MTF if enabled
                     if FEATURE_FLAGS.get("smc_strategy", False) and df is not None and not df.empty:
-                        from backend.core.smc import detect_smc_concepts, calculate_signal_confidence, get_session_boost
+                        # SMC v2 — directional, TIER-graded signal (the SAME brain
+                        # the walk-forward backtest validates: direction from market
+                        # structure + Demand/Supply zone + H1 bias, NOT the sign of
+                        # raw trend_strength). evaluate_smc_signal internally applies
+                        # the regime gate, so the separate D1-bias-lock pass is gone.
+                        from backend.core.smc import evaluate_smc_signal, get_session_boost
                         from backend.core.volume_profile import calculate_volume_profile
-                        
+                        from backend.core import get_market_indicators, compute_macro_trend_from_closes
+
                         atr = regime.atr
-                        
-                        # Use H1 candles from CandleManager for SMC detection when available
                         cm = candle_managers.get(ticker)
                         smc_df = cm.get_ohlc("H1", bars=100) if cm else None
                         if smc_df is not None and len(smc_df) >= 20:
-                            concepts = detect_smc_concepts(smc_df, atr)
+                            indicators = get_market_indicators(smc_df, ticker)
+                            macro_1h = compute_macro_trend_from_closes(
+                                smc_df["close"].astype(float).tolist()
+                            )
                             vp = calculate_volume_profile(smc_df)
-                        else:
-                            concepts = {"mss": False, "ob": False, "fvg": False, "sweep": False, "sr_level": False}
-                            vp = {"poc": 0.0, "vah": 0.0, "val": 0.0, "delta_volume": 0.0}
-                        
-                        d1_aligned = True
-                        if FEATURE_FLAGS.get("mtf_strategy", False):
-                            from backend.core.mtf import calculate_mtf_indicators, check_d1_bias_lock
-                            # Get real timeframe data from CandleManager
-                            cm = candle_managers.get(ticker)
-                            if cm is not None:
-                                ohlc_dict = cm.get_all_timeframes()
-                            else:
-                                ohlc_dict = {
-                                    "M15": df.rename(columns={"price": "close"}),
-                                    "H1": df.rename(columns={"price": "close"}),
-                                    "H4": df.rename(columns={"price": "close"}),
-                                    "D1": df.rename(columns={"price": "close"})
+                            smc_sig = evaluate_smc_signal(
+                                smc_df, atr, indicators, macro_1h, regime.regime
+                            )
+
+                            if smc_sig["action"] in ("BUY", "SELL"):
+                                action = smc_sig["action"]
+                                boost = get_session_boost(datetime.now(timezone.utc))
+                                conf = min(1.0, smc_sig["confidence"] * boost)
+
+                                # Confirmation Candle check
+                                if FEATURE_FLAGS.get("confirmation_candle", True):
+                                    from backend.core import confirm_signal
+                                    temp_sig = {"action": action, "confidence_score": conf, "price_at_signal": price_data["last_price"]}
+                                    if not confirm_signal(temp_sig, smc_df, atr):
+                                        logger.info(f"[Strategy] {ticker} {action} SMC signal pending confirmation candle. Skipping.")
+                                        continue
+
+                                signal_type = action
+                                reasoning = f"{smc_sig['reason']} (conf {conf:.2f}, POC {vp['poc']:.2f})"
+                                breakdown = {
+                                    "trend": float(regime.trend_strength),
+                                    "momentum": float(regime.trend_strength),
+                                    "volume": float(vp["delta_volume"]),
+                                    "news": news_score_val,
+                                    "volatility": float(regime.volatility_score),
+                                    "final": conf * 100,
+                                    "smc_tier": smc_sig.get("tier"),
                                 }
-                            for tf, odf in ohlc_dict.items():
-                                odf.index = pd.to_datetime(odf["timestamp"])
-                            
-                            mtf_data = calculate_mtf_indicators(ohlc_dict)
-                            # Check lock for potential actions
-                            d1_aligned = not check_d1_bias_lock(mtf_data, "BUY", atr) or not check_d1_bias_lock(mtf_data, "SELL", atr)
-                        
-                        concepts["d1_aligned"] = d1_aligned
-                        conf = calculate_signal_confidence(concepts)
-                        
-                        if conf > 0.0:
-                            # Session Boost
-                            boost = get_session_boost(datetime.now(timezone.utc))
-                            conf = min(1.0, conf * boost)
-                            
-                            # Determine action direction based on trend
-                            action = "BUY" if regime.trend_strength > 0 else "SELL"
-                            
-                            # Confirmation Candle check
-                            if FEATURE_FLAGS.get("confirmation_candle", True):
-                                from backend.core import confirm_signal
-                                cm = candle_managers.get(ticker)
-                                ohlc_df = cm.get_ohlc("H1", bars=100) if cm else df.rename(columns={"price": "close"})
-                                temp_sig = {"action": action, "confidence_score": conf, "price_at_signal": price_data["last_price"]}
-                                if not confirm_signal(temp_sig, ohlc_df, atr):
-                                    logger.info(f"[Strategy] {ticker} {action} signal pending confirmation candle. Skipping.")
-                                    continue
-                            
-                            signal_type = action
-                            reasoning = f"[SMC] {action} signal generated with confidence {conf:.2f}. POC: {vp['poc']:.2f}, VAH: {vp['vah']:.2f}"
-                            breakdown = {
-                                "trend": float(regime.trend_strength),
-                                "momentum": float(regime.trend_strength),
-                                "volume": float(vp["delta_volume"]),
-                                "news": news_score_val,
-                                "volatility": float(regime.volatility_score),
-                                "final": conf * 100
-                            }
                     else:
                         # UNIFIED signal — the SAME evaluate_strategy_rules the
                         # dashboard and backtest use (one brain, regime-aware incl.

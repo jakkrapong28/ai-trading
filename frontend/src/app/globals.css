@@ -65,3 +65,43 @@ body {
   animation: float 4s ease-in-out infinite;
 }
 
+
+/* ── JARVIS / HUD office overview ── */
+@keyframes hud-spin       { to { transform: rotate(360deg); } }
+@keyframes hud-spin-rev   { to { transform: rotate(-360deg); } }
+@keyframes hud-core-pulse { 0%,100% { opacity: .9; transform: scale(1); } 50% { opacity: 1; transform: scale(1.04); } }
+@keyframes hud-ring-glow  { 0%,100% { opacity: .55; } 50% { opacity: 1; } }
+@keyframes hud-scan       { 0% { transform: translateY(-100%); } 100% { transform: translateY(2000%); } }
+@keyframes hud-blip       { 0% { opacity: 1; } 100% { opacity: 0; } }
+
+.hud-spin-30  { animation: hud-spin 30s linear infinite; transform-origin: center; }
+.hud-spin-60  { animation: hud-spin 60s linear infinite; transform-origin: center; }
+.hud-spin-r45 { animation: hud-spin-rev 45s linear infinite; transform-origin: center; }
+.hud-core     { animation: hud-core-pulse 3.5s ease-in-out infinite; }
+.hud-ring     { animation: hud-ring-glow 4s ease-in-out infinite; }
+.hud-scanline { animation: hud-scan 7s linear infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .hud-spin-30, .hud-spin-60, .hud-spin-r45,
+  .hud-core, .hud-ring, .hud-scanline { animation: none !important; }
+}
+
+/* ── HUD boot sequence + reveals ── */
+@keyframes hud-boot-out  { 0% { opacity:1; } 70% { opacity:1; } 100% { opacity:0; visibility:hidden; } }
+@keyframes hud-boot-bar  { 0% { width:0; } 100% { width:100%; } }
+@keyframes hud-fade-up   { 0% { opacity:0; transform:translateY(14px); } 100% { opacity:1; transform:translateY(0); } }
+@keyframes hud-pop       { 0% { opacity:0; transform:scale(.92); } 100% { opacity:1; transform:scale(1); } }
+@keyframes hud-radar     { to { transform:rotate(360deg); } }
+@keyframes hud-flicker   { 0%,100%{opacity:1;} 92%{opacity:1;} 94%{opacity:.4;} 96%{opacity:1;} }
+
+.hud-bootscreen { animation: hud-boot-out 1.7s ease-in forwards; }
+.hud-bootbar    { animation: hud-boot-bar 1.3s cubic-bezier(.7,0,.3,1) forwards; }
+.hud-reveal     { opacity:0; animation: hud-fade-up .7s cubic-bezier(.22,1,.36,1) forwards; }
+.hud-pop        { opacity:0; animation: hud-pop .9s cubic-bezier(.22,1,.36,1) forwards; }
+.hud-radar      { animation: hud-radar 4.5s linear infinite; transform-origin:center; }
+.hud-flicker    { animation: hud-flicker 6s linear infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .hud-bootscreen, .hud-bootbar, .hud-reveal, .hud-pop, .hud-radar, .hud-flicker { animation:none !important; opacity:1 !important; }
+  .hud-bootscreen { display:none !important; }
+}

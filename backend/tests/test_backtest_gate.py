@@ -6,6 +6,7 @@ FEATURE_FLAG is enabled or a deploy proceeds.
 from backend.backtest import (
     evaluate_walk_forward,
     WALK_FORWARD_PASS_CRITERIA as PC,
+    WALK_FORWARD_MIN_TRADES,
 )
 
 
@@ -51,6 +52,37 @@ def test_infinite_profit_factor_counts_as_pass():
     r = {"oos_metrics": {"sharpe_ratio": 2.0, "profit_factor": float("inf"),
                          "max_drawdown": 5.0, "risk_of_ruin": 0.0}}
     ev = evaluate_walk_forward([r, r, r])
+    assert ev["gate_pass"] is True
+
+
+def test_thin_window_cannot_pass_even_with_great_metrics():
+    # A 2-trade window posting fantastic stats is small-sample noise — it must
+    # NEVER count as a pass (this is the XAUUSD #2 Sharpe-2611 / PF-99 case).
+    great = {"oos_metrics": {"sharpe_ratio": 2611.0, "profit_factor": 99.9,
+                             "max_drawdown": 0.0, "risk_of_ruin": 0.0},
+             "trades_count": 2}
+    ev = evaluate_walk_forward([great, great, great])
+    assert ev["passed_windows"] == 0
+    assert ev["thin_windows"] == 3
+    assert ev["gate_pass"] is False
+
+
+def test_thin_windows_only_tighten_the_gate():
+    # Two real passing windows + one thin fluke → fluke is excluded from passes,
+    # so it can only ever lower the ratio, never green-light.
+    fat = dict(_win(), trades_count=WALK_FORWARD_MIN_TRADES + 3)
+    fluke = {"oos_metrics": _win()["oos_metrics"], "trades_count": 1}
+    ev = evaluate_walk_forward([fat, fat, fluke])
+    assert ev["passed_windows"] == 2
+    assert ev["thin_windows"] == 1
+    assert ev["pass_ratio"] == round(2 / 3 * 100, 1)
+
+
+def test_trades_count_at_threshold_is_not_thin():
+    fat = dict(_win(), trades_count=WALK_FORWARD_MIN_TRADES)
+    ev = evaluate_walk_forward([fat, fat, fat])
+    assert ev["thin_windows"] == 0
+    assert ev["passed_windows"] == 3
     assert ev["gate_pass"] is True
 
 
