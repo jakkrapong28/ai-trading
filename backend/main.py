@@ -273,6 +273,11 @@ class RiskRequest(BaseModel):
     rejectThreshold: float = 3.0
     riskPct: float = 1.5
 
+class MT5ConnectRequest(BaseModel):
+    login: int
+    password: str
+    server: str
+
 class SettingsRequest(BaseModel):
     telegram_token: Optional[str] = ""
     anthropic_key: Optional[str] = ""
@@ -1111,9 +1116,27 @@ async def get_state():
         broker_spread=current_spread_pips(current_symbol),
     )
 
-    orders = await load_orders_from_db()
-    balances = await calculate_balances()
-    
+    # When an MT5 account is connected, mirror its real balance/equity AND trade
+    # history onto the dashboard (read-only). Falls back to the simulated splits +
+    # DB paper trades when the bridge is down / no account is logged in.
+    mt5_account = await _fetch_mt5_account()
+    if mt5_account:
+        balances = [{
+            "source": "MT5",
+            "equity": mt5_account["equity"],
+            "balance": mt5_account["balance"],
+            "free_margin": mt5_account.get("margin_free", mt5_account["balance"]),
+        }]
+        base_balance = mt5_account["balance"]
+        equity_source = "mt5"
+        orders = await _fetch_mt5_orders()
+    else:
+        balances = await calculate_balances()
+        from backend.config import STARTING_BALANCE
+        base_balance = STARTING_BALANCE
+        equity_source = "sim"
+        orders = await load_orders_from_db()
+
     def _smc_counts(db):
         from sqlalchemy import func
         last_cal = db.query(func.max(SMCSignalLog.calibrated_at)).scalar()
@@ -1143,6 +1166,8 @@ async def get_state():
         "risk": risk,
         "mode": current_mode,
         "balances": balances,
+        "base_balance": base_balance,
+        "equity_source": equity_source,
         "journal": journal_log,
         "orders": orders,
         "debate": [],
@@ -1560,6 +1585,87 @@ async def update_settings(req: SettingsRequest):
         logger.error(f"Error saving settings to .env: {e}")
 
     return {"status": "success", "updated": list(updates.keys())}
+
+# ---------------------------------------------------------------------------
+# MT5 connection — thin proxy to the Windows MT5 bridge (tools/mt5_bridge_server.py).
+# The bridge holds the actual MetaTrader5 session (it runs under py-3.13); this
+# backend only forwards connect/status/disconnect and never stores the password.
+# ---------------------------------------------------------------------------
+def _mt5_bridge_base() -> str:
+    return os.getenv("MT5_BRIDGE_URL", "http://localhost:8765").rstrip("/")
+
+def _mt5_headers() -> dict:
+    key = os.getenv("MT5_BRIDGE_KEY", "")
+    return {"X-API-Key": key} if key else {}
+
+
+async def _fetch_mt5_account() -> Optional[dict]:
+    """Return the live MT5 account dict from the bridge, or None if not connected.
+    Used to mirror the real broker balance/equity onto the dashboard (read-only)."""
+    try:
+        r = await http_client.get(
+            f"{_mt5_bridge_base()}/status", headers=_mt5_headers(), timeout=3.0
+        )
+        data = r.json()
+        if data.get("connected") and data.get("account"):
+            return data["account"]
+    except Exception:
+        pass
+    return None
+
+
+async def _fetch_mt5_orders() -> List[dict]:
+    """Real MT5 trade history (open positions + closed deals) in the dashboard
+    Order shape. Empty list if the bridge is unreachable."""
+    try:
+        r = await http_client.get(
+            f"{_mt5_bridge_base()}/orders", headers=_mt5_headers(), timeout=6.0
+        )
+        return r.json().get("orders", [])
+    except Exception:
+        return []
+
+
+@app.post("/api/mt5/connect")
+async def mt5_connect(req: MT5ConnectRequest):
+    try:
+        r = await http_client.post(
+            f"{_mt5_bridge_base()}/connect",
+            json=req.model_dump(),
+            headers=_mt5_headers(),
+            timeout=30.0,
+        )
+        return r.json()
+    except httpx.RequestError as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"MT5 bridge unreachable at {_mt5_bridge_base()} — "
+                   f"start it with: py -3.13 tools/mt5_bridge_server.py ({e})",
+        )
+
+
+@app.get("/api/mt5/status")
+async def mt5_status():
+    try:
+        r = await http_client.get(
+            f"{_mt5_bridge_base()}/status", headers=_mt5_headers(), timeout=8.0
+        )
+        return r.json()
+    except httpx.RequestError:
+        return {"connected": False, "bridge_running": False,
+                "bridge_url": _mt5_bridge_base()}
+
+
+@app.post("/api/mt5/disconnect")
+async def mt5_disconnect():
+    try:
+        r = await http_client.post(
+            f"{_mt5_bridge_base()}/disconnect", headers=_mt5_headers(), timeout=8.0
+        )
+        return r.json()
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=503, detail=f"MT5 bridge unreachable ({e})")
+
 
 @app.get("/api/erp/ledger")
 async def proxy_erp_ledger():

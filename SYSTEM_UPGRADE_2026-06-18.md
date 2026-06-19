@@ -129,3 +129,72 @@ backend/venv/bin/python -m uvicorn backend.main:app --port 8000   # deps อย�
 
 ## 7. หมายเหตุการ commit
 งานทั้งหมดข้างต้น **ยังไม่ได้ commit** (uncommitted บน `main`) — รอสั่งก่อน commit
+
+---
+
+# อัปเดตรอบ 2026-06-20 — เชื่อมต่อ MetaTrader 5 (MT5) จริง
+
+ต่อยอด roadmap ข้อ 1 (MT5 Option A) ให้สำเร็จ + ต่อยอดเป็น "หน้าเชื่อม MT5" และ
+"สะท้อนบัญชี MT5 จริงบนเว็บ" หลักการเดิม: **read-only ก่อน ไม่ส่งออเดอร์จริงจนกว่าจะสั่ง**
+
+## 8. เชื่อม MT5 ได้จริง (ราคา + บัญชี)
+
+| | ก่อน | หลัง |
+|---|---|---|
+| สถานะ MT5 | ไม่เคยเชื่อม (`MT5_BRIDGE_URL` ไม่ตั้ง → provider ปิดเงียบ) | **เชื่อมจริง** บัญชี Exness demo `433787236` / server `Exness-MT5Trial7` / balance 500 USD |
+| ราคาทอง XAUUSD | TwelveData/Binance gold | **มาจาก MT5** (`XAUUSDm` → emit เป็น `XAUUSD`) |
+| EURUSD | ไม่มี feed เลย | **มาจาก MT5** (`EURUSDm`) |
+| คริปโต / หุ้น | Binance / Yahoo | **คงเดิม** (Binance เป็น spot จริง, หุ้น Exness ไม่ quote) |
+
+> Exness ใช้ symbol ลงท้าย `m` (XAUUSDm) → provider map กลับเป็นชื่อ canonical อัตโนมัติ
+> (ปรับ suffix ได้ที่ `MT5_SYMBOL_SUFFIX`)
+
+## 9. หน้า "MT5 Connection" (ใหม่) + Sidebar
+
+- หน้าใหม่ `frontend/src/app/(dashboard)/mt5/page.tsx` (เมนู WORKSPACE → **MT5 Connection**)
+- กรอก Login / Master password / Server → **กดเชื่อม/ตัดการเชื่อมต่อ** ได้จากเว็บ
+- การ์ดสถานะบัญชีสด: balance, equity, leverage, build + ไฟเขียว CONNECTED
+- ช่อง **Server เป็น combobox ช่องเดียว** (กดเลือกจากรายชื่อ Exness ที่พบบ่อย + พิมพ์เองได้)
+- หลังกดเชื่อม/ตัด → สั่ง `fetchStateData()` ของ context ทันที (HUD อัปเดตเองไม่ต้อง refresh)
+
+## 10. Bridge server ยกระดับ (`tools/mt5_bridge_server.py`)
+
+| ก่อน | หลัง |
+|---|---|
+| มีแค่ `/health`, `/ticks`, ใช้ `mt5.initialize()` เปล่า | เพิ่ม `/connect` `/disconnect` `/status` `/orders` + **login ด้วย account+password** |
+| ไม่มี session | เซฟ creds ที่ `tools/.mt5_session.json` (gitignored) → **auto-connect ตอน start** |
+| หลุดแล้วค้าง | **self-heal**: `/status` เจอว่าหลุด → reconnect จาก session อัตโนมัติ |
+| — | thread-lock กัน MT5 IPC ชนกัน, คืน `margin_free`, endpoint `/orders` = positions + history |
+| รันด้วย python ไหนก็ได้ | **ต้องรันด้วย `py -3.13`** (มี MetaTrader5) — มีสคริปต์ `tools/run_mt5_bridge.ps1` |
+
+## 11. Backend / Provider
+
+- `backend/main.py`: เพิ่ม proxy `POST /api/mt5/connect`, `GET /api/mt5/status`, `POST /api/mt5/disconnect` (ไม่เก็บรหัสฝั่ง backend) + helper `_fetch_mt5_account()` / `_fetch_mt5_orders()`
+- `GET /api/state` **MT5-aware**: เมื่อเชื่อมต่ออยู่ → ส่ง `balances`/`orders` จาก MT5 จริง + เพิ่มฟิลด์ `base_balance`, `equity_source` (ถ้าหลุด → fallback ค่า simulated เดิมอัตโนมัติ)
+- `backend/engines/providers/mt5_bridge.py`: map `XAUUSDm/EURUSDm` → canonical, default ชี้ `localhost:8765`, เงียบ error เมื่อ bridge ยังไม่รัน
+- `backend/.env`: เพิ่ม `MT5_BRIDGE_URL=http://localhost:8765`, `MT5_SYMBOL_SUFFIX=m`
+
+## 12. Dashboard สะท้อนบัญชี MT5 จริง (read-only)
+
+| | ก่อน | หลัง |
+|---|---|---|
+| TOTAL EQUITY / BASE | เงินจำลอง `STARTING_BALANCE=45,750` | **ยอด MT5 จริง 500 USD** (เมื่อเชื่อมต่อ); หลุด → กลับไป 45,750 อัตโนมัติ |
+| ประวัติ/ออเดอร์ | paper trades ใน DB | **positions + history จากบัญชี MT5** (ตอนนี้ว่าง = ตรงกับ demo) |
+| PnL บนแกน | today realised (paper) | floating P/L = equity − balance (label "MT5 · FLOATING P/L") |
+
+ไฟล์: `frontend/src/context/DashboardContext.tsx` (state `baseBalance`/`equitySource`),
+`frontend/src/app/(dashboard)/page.tsx` (BASE ใช้ค่าจริงแทน hardcode 45,750)
+
+## 13. บทเรียน / ข้อควรรู้ (gotchas)
+
+- **`MetaTrader5` รันได้แค่ Python 3.13** บนเครื่องนี้ (backend venv เป็น 3.14 import ไม่ได้) → bridge ต้อง `py -3.13`
+- **Login ด้วย email ใช้กับ API ไม่ได้** (`-6 Authorization failed`) ต้องใช้ **account number + master password** (ตั้งใน Exness Personal Area → บัญชีเทรด → เปลี่ยนรหัสผ่านการซื้อขาย)
+- Terminal build 5830 ใหม่กว่าแพ็กเกจ pip 5735 — **ใช้ด้วยกันได้ ไม่ใช่ปัญหา**
+- ต้องเปิด **Algo Trading** ใน terminal + เปิด terminal ค้างไว้
+
+## 14. ยังไม่ทำ / ขั้นต่อไป
+
+- ❌ **ส่งออเดอร์จริงไป MT5 ยังไม่ได้** — กดออเดอร์บนเว็บยังเข้า PaperBroker (DB) ไม่ขึ้นใน MT5
+  (ต้องเพิ่ม `mt5.order_send` + route execution → MT5 ถ้าต้องการเทรดจริงบน demo)
+- equity บน HUD sync ตอน "กดเชื่อม" + ตอนโหลดหน้า; ยังไม่ poll สด ๆ ตลอดเวลา
+- งานรอบนี้ **ยังไม่ได้ commit** — `.env` และ `.mt5_session.json` ถูก gitignore (ไม่หลุดขึ้น git)

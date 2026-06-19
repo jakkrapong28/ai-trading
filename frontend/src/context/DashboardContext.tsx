@@ -31,6 +31,9 @@ function useDashboardState() {
   const [risk, setRisk] = useState<RiskCheck | null>(null);
   const [mode, setMode] = useState("watch");
   const [balances, setBalances] = useState<Balance[]>([]);
+  // Base capital + which source equity reflects ("mt5" = real broker, "sim" = paper).
+  const [baseBalance, setBaseBalance] = useState<number>(45750);
+  const [equitySource, setEquitySource] = useState<string>("sim");
   const [orders, setOrders] = useState<Order[]>([]);
   const [activeTab, setActiveTab] = useState("POSITIONS");
   const [filterDate, setFilterDate] = useState("");
@@ -125,7 +128,11 @@ function useDashboardState() {
   const totalEquity = (balances || []).reduce((sum, b) => sum + b.equity, 0);
   const activeTradesCount = (orders || []).filter((o) => o.status === "PENDING" || o.status === "OPEN").length;
   const closedOrders = (orders || []).filter((o) => o.status === "CLOSED");
-  const todayPnLSum = closedOrders.reduce((sum, o) => sum + o.pnl, 0);
+  // Mirroring a real MT5 account: "today realised" from paper trades is irrelevant,
+  // so show floating PnL (equity − base). Otherwise use simulated closed-trade PnL.
+  const todayPnLSum = equitySource === "mt5"
+    ? totalEquity - baseBalance
+    : closedOrders.reduce((sum, o) => sum + o.pnl, 0);
   const pnlPct = totalEquity > 0 ? (todayPnLSum / (totalEquity - todayPnLSum)) * 100 : 0.0;
 
   // เลื่อนหน้าต่างแชทลงด้านล่างอัตโนมัติ
@@ -174,6 +181,8 @@ function useDashboardState() {
       setRisk(data.risk);
       setMode(data.mode);
       setBalances(data.balances || []);
+      if (typeof data.base_balance === "number") setBaseBalance(data.base_balance);
+      if (data.equity_source) setEquitySource(data.equity_source);
       setOrders(data.orders || []);
       
       if (data.feature_flags) setFeatureFlags(data.feature_flags);
@@ -649,6 +658,8 @@ function useDashboardState() {
     frameCountRef,
     scaleMultiplierRef,
     totalEquity,
+    baseBalance,
+    equitySource,
     activeTradesCount,
     closedOrders,
     todayPnLSum,

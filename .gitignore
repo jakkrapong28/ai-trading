@@ -32,6 +32,7 @@ htmlcov/
 .tox/
 
 # Sensitive files / API Keys
+tools/.mt5_session.json
 .env
 .env.local
 .env.development.local

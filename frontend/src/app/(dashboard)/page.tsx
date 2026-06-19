@@ -5,7 +5,6 @@ import { SYMBOLS_LIST } from "@/config/dashboard";
 import { useDashboard } from "@/context/DashboardContext";
 
 const CYAN = "#38e0ff";
-const STARTING_BALANCE = 45750;
 
 const fmt = (n: number | null | undefined, d = 2) =>
   n == null ? "—" : n.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
@@ -22,7 +21,7 @@ const biasColor = (action?: string) =>
 export default function OfficeOverviewPage() {
   const {
     symbol, priceMap, indicators, signal,
-    totalEquity, todayPnLSum, pnlPct, activeTradesCount,
+    totalEquity, baseBalance, equitySource, todayPnLSum, pnlPct, activeTradesCount,
     handleSymbolChange,
   } = useDashboard();
 
@@ -61,7 +60,7 @@ export default function OfficeOverviewPage() {
     chg[s] = ((p - anchor.current[s]) / anchor.current[s]) * 100;
   }
 
-  const equityPct = Math.max(0, Math.min(1.5, totalEquity / STARTING_BALANCE));
+  const equityPct = baseBalance > 0 ? Math.max(0, Math.min(1.5, totalEquity / baseBalance)) : 0;
   const pnlUp = todayPnLSum >= 0;
   const sigConf = Math.round((signal?.confidence ?? 0) * 100);
   const rsi = indicators?.rsi ?? 0;
@@ -155,10 +154,11 @@ export default function OfficeOverviewPage() {
               pnlPct={pnlPct}
               fill={equityPct / 1.5}
               up={pnlUp}
+              label={equitySource === "mt5" ? "MT5 · FLOATING P/L" : "TODAY · REALISED"}
             />
             <div className="mt-3 flex items-center gap-2 text-[10px] font-mono text-[#3f7e93] tracking-[0.25em]">
               <span className="w-8 h-px bg-[#114b5f]" />
-              EQUITY CORE · BASE {STARTING_BALANCE.toLocaleString()}
+              EQUITY CORE · BASE {baseBalance.toLocaleString()}
               <span className="w-8 h-px bg-[#114b5f]" />
             </div>
           </div>
@@ -396,7 +396,7 @@ function CoreGlyph() {
   );
 }
 
-function ReactorCore({ equity, pnl, pnlPct, fill, up }: { equity: number; pnl: number; pnlPct: number; fill: number; up: boolean }) {
+function ReactorCore({ equity, pnl, pnlPct, fill, up, label }: { equity: number; pnl: number; pnlPct: number; fill: number; up: boolean; label: string }) {
   const R = 120;
   const c = 2 * Math.PI * R;
   const pnlColor = up ? "#10b981" : "#ef4444";
@@ -440,7 +440,7 @@ function ReactorCore({ equity, pnl, pnlPct, fill, up }: { equity: number; pnl: n
             ({up ? "+" : ""}{pnlPct.toFixed(2)}%)
           </span>
         </div>
-        <div className="text-[8.5px] tracking-[0.25em] text-[#3f7e93] font-mono mt-1.5">TODAY · REALISED</div>
+        <div className="text-[8.5px] tracking-[0.25em] text-[#3f7e93] font-mono mt-1.5">{label}</div>
       </div>
     </div>
   );
