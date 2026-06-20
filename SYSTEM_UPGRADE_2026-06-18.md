@@ -261,3 +261,50 @@ backend/venv/bin/python -m uvicorn backend.main:app --port 8000   # deps อย�
 "ไม่เทรด" แต่ window ก็ยัง fail เพราะ thin/ไม่มีฝั่งชนะ → เลเวอร์จริงที่เหลือคือ **เพิ่มกลยุทธ์
 mean-reversion สำหรับ regime range** (ข้อ 4: per-regime strategy) ให้ "ตลาดที่ breakout แพ้"
 กลายเป็นตลาดที่ MR ชนะ — หรือไปเฟส A (forward-test config 50% บน paper) เก็บ ground truth จริง
+
+---
+
+# สรุปสถานะรวม + แผนถัดไป (อัปเดต 2026-06-20)
+
+## 19. สถานะ Roadmap (commit milestone แล้ว — branch `strategy-research-milestone`, commit `2525844`)
+
+| ข้อ | งาน | สถานะ | ผล/หมายเหตุ |
+|---|---|---|---|
+| 1 | MT5 Option A | ✅ เสร็จ | เพิ่ม `backend/.env.example` (+ `erp/.env.example`), un-ignore `*.env.example` |
+| 6 | D1 pre-flight `tzinfo` bug | ✅ เสร็จ | อ่าน timestamp column แทน int index + regression test |
+| 5 | async-DB ใน execution monitor | ✅ เสร็จ | `run_db()`/snapshot pattern — ไม่ถือ session ข้าม await + เทสต์จริง |
+| 2 | ฆ่า window หายนะ | ✅ research เสร็จ | เครื่องวัด+filter ดัน **19.4%→47.1%**; ต้นเหตุ = chop + เครื่องวัดพัง |
+| 3 | edge ใหม่ (iter 1) | ✅ เสร็จ | adaptive-TP/session ดันแค่ →50%; **เพดาน SMC-breakout ~50%** |
+| 4 | per-regime / mean-reversion | ⬜ ยังไม่ทำ | เลเวอร์จริงที่เหลือดัน 50→60 |
+| 7-8 | split main.py / FinBERT | ⬜ ค้าง | engineering เดิม (ยังไม่แตะ) |
+
+**ความจริงสำคัญ:** ทุก knob ใหม่ (vol/CB/ADX/RR/session) **default ปิดหมด** → พฤติกรรม live
+ไม่เปลี่ยน; **auto-trade ยังปิด** เพราะ walk-forward gate (≥60%) ยังไม่ผ่าน (ดีสุด ~50%)
+config ที่ validate แล้วว่าดีสุด = **1h + CB(3) + ADX(20) [+ adaptive-TP]**
+
+## 20. แผนถัดไป (เลือกเส้นทาง)
+
+### เส้นทาง A — Forward-test paper (แนะนำ: เก็บ ground truth จริง, เลี่ยง backtest overfit)
+1. เปิด **paper auto-execute** (ปลอดภัย ไม่ใช่เงินจริง) ด้วย config ดีสุด → ระบบลงเทรด paper เอง
+2. เปิด knob ที่ validate แล้ว: ตั้ง `RR_BY_REGIME` + เปิด ADX/CB ใน live ให้ตรง backtest
+3. ปล่อยให้ journal เติม: `SMCSignalLog` resolve outcome → `smc_calibrate` → `StrategyStats`
+   (ตอนนี้ "อด" เพราะ watch mode — pre-req คือต้องลงเทรด paper จริง)
+4. ทำ **หน้ารีวิว journal** (win-rate ต่อ confidence/regime, equity curve จริง)
+5. **เกณฑ์เปิด auto-trade จริง:** track record paper ≥ N เทรด + สถิติจริงผ่านเกณฑ์ (ไม่ใช่แค่ backtest)
+
+### เส้นทาง B — ข้อ 4: mean-reversion สำหรับ regime range (ดัน 50→60 ใน backtest)
+1. กลยุทธ์ MR: ในตลาด range/SIDEWAYS → ซื้อแนวรับ/ขายแนวต้าน (ตรงข้าม breakout) ทดแทน
+   window ที่ breakout แพ้
+2. Router ต่อ regime: trending → SMC-breakout, range → MR (ต่อยอด regime ที่มีอยู่)
+3. A/B ผ่าน walk-forward เดิม (1h OOS=400) → เป้า pass-ratio เข้าใกล้ 60%
+
+### Engineering ค้าง (ทำคู่ขนานได้)
+- ข้อ 7: split `main.py` (~1600 บรรทัด) + circular import
+- ข้อ 8: ติดตั้ง FinBERT (news ใช้ vader fallback)
+- (เก็บงาน) merge `strategy-research-milestone` → main + push origin เมื่อพร้อม
+
+## 21. เครื่องมือ research ที่เพิ่ม (ใช้ต่อได้)
+- `backend/scratch/ab_validate.py` — A/B walk-forward หลาย config ผ่าน env knobs (`BT_*`)
+- `backend/scratch/investigate_window65.py` — dump เทรดต่อ window พร้อม context (ไล่ root cause)
+- `_experiment_knobs()` ([backtest.py](backend/backtest.py)) — เปิด/ปิด filter ผ่าน env (CB/ADX/vol/RR/session/window-size)
+  โดยไม่ต้องแก้โค้ด
