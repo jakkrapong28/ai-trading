@@ -198,3 +198,66 @@ backend/venv/bin/python -m uvicorn backend.main:app --port 8000   # deps อย�
   (ต้องเพิ่ม `mt5.order_send` + route execution → MT5 ถ้าต้องการเทรดจริงบน demo)
 - equity บน HUD sync ตอน "กดเชื่อม" + ตอนโหลดหน้า; ยังไม่ poll สด ๆ ตลอดเวลา
 - งานรอบนี้ **ยังไม่ได้ commit** — `.env` และ `.mt5_session.json` ถูก gitignore (ไม่หลุดขึ้น git)
+
+---
+
+# อัปเดตรอบ 2026-06-20 — Roadmap ข้อ 2: ฆ่า window หายนะ (research + วัดผลจริง)
+
+ต่อยอด roadmap ข้อ 2 ("ดัน edge ให้ถึง 60%") ด้วยกระบวนการ **ไล่ต้นเหตุ → ซ่อมเครื่องวัด →
+วัดซ้ำด้วยตัวเลขจริง** (ไม่ปล่อยมั่ว)
+
+## 15. เครื่องมือที่เพิ่ม (ทุก knob default ปิด)
+- `evaluate_smc_signal` ([smc.py](backend/core/smc.py)) — 3 stand-aside gate: `block_volatile_regime`,
+  `max_atr_expansion`, `min_adx` (chop guard, ADX จาก `calculate_adx`)
+- `backtest.py` — consecutive-loss CB เปิดผ่าน cfg (`cb_max_losses`), window size ปรับได้
+  (`BT_IN_LEN/BT_OOS_LEN/BT_STEP_LEN`), knob A/B ผ่าน env (`_experiment_knobs`),
+  คอลัมน์ vol diagnostic ใน walk-forward report
+- เทสต์ใหม่: smc gates, ADX, window-config → **110 passed, 1 skipped**
+
+## 16. ข้อค้นพบ (XAUUSD, SMC v2 walk-forward, ตัวเลขจริง)
+1. **window หายนะ #65** (Ruin 100%, Sharpe -1326) = **range chop/whipsaw** ไม่ใช่ volatility
+   (vol 0%) — ทุกเทรดโดน SL, regime สลับ BULL↔BEAR ราย ๆ วัน, ไม่มีเบรกตัดขาดทุนรัว
+2. **คอขวดตัวจริง = เครื่องวัดพัง** — OOS window 200 แท่ง H1 ได้เทรด ~3-4 ไม้ → **47/67 window
+   เป็น THIN (เทรด<5) → เพดาน pass-ratio ~30%** filter ยิ่งตัดเทรดยิ่งแย่
+
+| config (XAUUSD v2) | pass-ratio | thin | เทรด/win |
+|---|---|---|---|
+| baseline OOS=200 (เดิม) | 19.4% | 47/67 | ~3-4 |
+| baseline OOS=400 (วัดถูก) | **35.3%** | 7/34 | 8.3 |
+| **OOS=400 + CB(3) + ADX(20)** | **47.1%** | 5/34 | 7.7 |
+| 15m/60d baseline OOS=400 | 18.2% | 3/11 | 7.2 |
+| 15m/60d + CB(3)+ADX(20) | 27.3% | 4/11 | 6.2 |
+
+3. แค่ขยาย OOS เป็น 400 (ไม่แตะกลยุทธ์) → 19.4%→**35.3%** (ส่วนใหญ่ของ "ความล้มเหลว" เดิมคือ
+   noise จาก thin ไม่ใช่ edge แย่)
+4. เปิด **CB+ADX** → 35.3%→**47.1%** (+~12pp) — filter พิสูจน์แล้วว่าได้ผล **เมื่อ window ไม่ thin**
+5. **M15 ไม่ใช่คำตอบ** — edge อ่อนกว่า 1h ทุกมุม (timeframe ใหม่แบบ M15 noisy เกิน)
+
+## 17. สรุป / ขั้นต่อไป
+- **ดีสุด = 1h + CB(3) + ADX(20) = 47.1%** — ดีขึ้นมากจาก 19.4% แต่ **ยังไม่ถึง 60% → auto-trade ปิดต่อ**
+- ช่องว่าง 47→60 **ต้องใช้ edge ใหม่จริง (ข้อ 3)** ไม่ใช่แค่ filter/ปรับ window อีกแล้ว
+- เฟสถัดไป (A): **เก็บเทรด paper จริง** — journal มีอยู่แล้ว (`SMCSignalLog` + `smc_calibrate` +
+  `StrategyStats`) แต่ "อด" เพราะ watch mode ไม่ลงเทรด → outcome ค้าง PENDING; เปิด paper
+  auto-execute + หน้ารีวิว เพื่อสะสม ground truth ก่อนตัดสินใจ auto-trade จริง
+
+## 18. Roadmap ข้อ 3 — หา edge ใหม่ iteration 1 (adaptive TP / session) — ตัวเลขจริง
+ทดสอบ 2 สมมุติฐานบน base ที่ดีสุด (1h/730d OOS=400 + CB3 + ADX20 = 47.1%):
+
+| config | pass-ratio | Δ vs base | blowups |
+|---|---|---|---|
+| base (CB3+ADX20) | 47.1% | — | 3 |
+| +H1 adaptive-TP (RR ตาม regime) | **50.0%** | +2.9pp | 4 |
+| +H2 session gate (ตัด Asian/Sydney) | 47.1% | 0 | 6 |
+| +H1+H2 | 32.4% | −14.7pp | 3 |
+
+- **H1 (adaptive TP)** ช่วยนิดเดียว — เพราะตลาด chop ถูก label เป็น BULL/BEAR สลับ (ไม่ใช่
+  SIDEWAYS) → RR ต่ำไม่ได้ลงตรงจุดที่หายนะจริง
+- **H2 (session gate)** ไม่ช่วย + blowups เพิ่ม (yahoo timestamp เป็น local-tz → session map
+  เพี้ยน และ/หรือ ทองไม่ขึ้นกับ session) ; รวม H1+H2 ยิ่งแย่ (ตัดเทรด→thin เพิ่ม)
+- **สรุป: เพดานกลยุทธ์ SMC-breakout ≈ 50%** การจูน TP/filter ให้ผลลดน้อยถอยลง knob ทั้งหมด
+  คง **default ปิด** (H1 marginal, H2 ติดลบ ไม่เก็บ)
+
+**บทเรียนเชิงกลยุทธ์:** breakout แพ้เชิงโครงสร้างในตลาด range (โดน SL รัว) การกรองออกได้แค่
+"ไม่เทรด" แต่ window ก็ยัง fail เพราะ thin/ไม่มีฝั่งชนะ → เลเวอร์จริงที่เหลือคือ **เพิ่มกลยุทธ์
+mean-reversion สำหรับ regime range** (ข้อ 4: per-regime strategy) ให้ "ตลาดที่ breakout แพ้"
+กลายเป็นตลาดที่ MR ชนะ — หรือไปเฟส A (forward-test config 50% บน paper) เก็บ ground truth จริง

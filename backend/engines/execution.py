@@ -6,13 +6,14 @@ import logging
 import uuid
 import httpx
 import os
+from types import SimpleNamespace
 from typing import Dict, Any, List
 from datetime import datetime, timezone
 
 from backend.shared.events.core import EventBus, CH_RISK_APPROVED, CH_EXEC_OPENED, CH_EXEC_CLOSED, CH_MARKET_DATA, CH_MARKET_REGIME
 from backend.shared.schema.events import RiskApprovedEvent, ExecutionEvent, MarketTickEvent, MarketRegimeEvent
 from backend.core import validate_atr, validate_price
-from backend.shared.database.core import SessionLocal
+from backend.shared.database.core import SessionLocal, run_db
 from backend.shared.database.models import Trade, TradeStatus, ERPDeliveryRecord, TradeAction
 from backend.brokers.paper import PaperBroker
 from backend.engines.risk import cb_manager
@@ -161,191 +162,237 @@ class ExecutionEngine:
                 await self.event_bus.publish(CH_EXEC_CLOSED, closed.model_dump())
                 asyncio.create_task(fire_erp_webhook("trade.pnl_realized", closed.model_dump(), trade_id))
 
+    @staticmethod
+    def _load_and_track(db, trade_id, price):
+        """Sync core (run off the event loop via run_db): re-fetch the trade,
+        update peak favorable price, commit, and return an in-memory snapshot.
+
+        Returns None if the trade is gone or already closed so the caller skips it.
+        The snapshot is a plain SimpleNamespace so the rest of the lifecycle logic
+        keeps using attribute access without holding the ORM session across awaits.
+        """
+        trade = db.query(Trade).filter(Trade.id == trade_id).first()
+        if not trade or trade.status in [TradeStatus.CLOSED, TradeStatus.CANCELLED]:
+            return None
+
+        action = trade.action.value if hasattr(trade.action, "value") else trade.action
+
+        # Initialize peak tracking if None
+        if trade.highest_price is None:
+            trade.highest_price = trade.entry_price
+        if trade.lowest_price is None:
+            trade.lowest_price = trade.entry_price
+
+        # Track peak favorable price
+        if action == "BUY":
+            if price > trade.highest_price:
+                trade.highest_price = price
+        else:
+            if price < trade.lowest_price:
+                trade.lowest_price = price
+
+        db.commit()
+
+        return SimpleNamespace(
+            id=trade.id,
+            ticker=trade.ticker,
+            action=action,
+            entry_price=trade.entry_price,
+            sl_price=trade.sl_price,
+            tp_price=trade.tp_price,
+            lot_size=trade.lot_size,
+            status=trade.status,
+            tp1_hit=trade.tp1_hit,
+            tp2_hit=trade.tp2_hit,
+            tp3_hit=trade.tp3_hit,
+            highest_price=trade.highest_price,
+            lowest_price=trade.lowest_price,
+            atr_at_entry=trade.atr_at_entry,
+            trailing_notified=trade.trailing_notified,
+            market_regime=trade.market_regime,
+        )
+
+    async def _update_trade(self, trade_id, **fields):
+        """Persist a small set of field updates off the event loop."""
+        def _work(db):
+            trade = db.query(Trade).filter(Trade.id == trade_id).first()
+            if not trade:
+                return
+            for k, v in fields.items():
+                setattr(trade, k, v)
+            db.commit()
+        await run_db(_work)
+
     async def monitor_active_trades(self):
         logger.info("Execution Engine monitoring CH_MARKET_DATA for trade lifecycle...")
-        from backend.config import FEATURE_FLAGS
-        
+
         async for msg in self.event_bus.subscribe_group(CH_MARKET_DATA, "execution_monitor_group", "execution_monitor_1"):
             try:
                 tick = MarketTickEvent(**msg)
                 ticker = tick.ticker
                 price = tick.price
                 self.latest_prices[ticker] = price
-                
+
                 positions = await self.broker.get_positions()
                 for p in positions:
                     if p["ticker"] != ticker:
                         continue
-                        
+
                     trade_id = p["order_id"]
-                    
+
                     # Race condition protection
                     async with cb_manager.get_trade_lock(trade_id):
-                        db = SessionLocal()
-                        trade = db.query(Trade).filter(Trade.id == trade_id).first()
-                        if not trade or trade.status in [TradeStatus.CLOSED, TradeStatus.CANCELLED]:
-                            db.close()
+                        snap = await run_db(self._load_and_track, trade_id, price)
+                        if snap is None:
                             continue
-                        
-                        action = trade.action.value if hasattr(trade.action, "value") else trade.action
-                        entry = trade.entry_price
-                        sl = trade.sl_price
-                        tp = trade.tp_price
-                        lot_size = trade.lot_size
-                        
-                        # Initialize peak tracking if None
-                        if trade.highest_price is None:
-                            trade.highest_price = entry
-                        if trade.lowest_price is None:
-                            trade.lowest_price = entry
-                        
-                        # Track peak favorable price
-                        if action == "BUY":
-                            if price > trade.highest_price:
-                                trade.highest_price = price
-                        else:
-                            if price < trade.lowest_price:
-                                trade.lowest_price = price
-                        
-                        db.commit()
-                        
-                        initial_risk = abs(entry - sl)
-                        if initial_risk <= 0:
-                            db.close()
-                            continue
-                        
-                        current_r = (price - entry) / initial_risk if action == "BUY" else (entry - price) / initial_risk
-                        
-                        # 1. Check Partial TP Levels (TP1: 1.0R, TP2: 2.0R, TP3: 3.0R)
-                        if FEATURE_FLAGS.get("partial_tp", False):
-                            if current_r >= 1.0 and not trade.tp1_hit:
-                                logger.info(f"[{ticker}] TP1 target (1.0R) reached for trade {trade_id}.")
-                                trade.tp1_hit = True
-                                db.commit()
-                                await self._execute_close(trade, price, "TP1 Hit (1.0R)", close_pct=0.5)
-                                # Move SL to Entry (BE)
-                                await self.broker.modify_order(trade_id, stop_loss=entry)
-                                trade.sl_price = entry
-                                db.commit()
-                                asyncio.create_task(fire_erp_webhook(
-                                    "trade.break_even", {"ticker": ticker, "price": entry}, trade_id))
-                                db.close()
-                                continue
-                                
-                            if current_r >= 2.0 and not trade.tp2_hit:
-                                logger.info(f"[{ticker}] TP2 target (2.0R) reached for trade {trade_id}.")
-                                trade.tp2_hit = True
-                                db.commit()
-                                # Close 30% of original lot. Since 50% remains, we close 60% of the remaining lot (0.3 / 0.5 = 0.6)
-                                await self._execute_close(trade, price, "TP2 Hit (2.0R)", close_pct=0.6)
-                                # Move SL to 1.0R Profit Lock
-                                lock_sl = entry + initial_risk if action == "BUY" else entry - initial_risk
-                                await self.broker.modify_order(trade_id, stop_loss=lock_sl)
-                                trade.sl_price = lock_sl
-                                db.commit()
-                                db.close()
-                                continue
-                                
-                            if current_r >= 3.0 and not trade.tp3_hit:
-                                logger.info(f"[{ticker}] TP3 target (3.0R) reached for trade {trade_id}. Closing remaining position.")
-                                trade.tp3_hit = True
-                                db.commit()
-                                await self._execute_close(trade, price, "TP3 Hit (3.0R)", close_pct=1.0)
-                                db.close()
-                                continue
-                        else:
-                            # Standard 1R BE update if not using partial TP
-                            if current_r >= 1.0 and trade.status == TradeStatus.OPEN:
-                                await self.broker.modify_order(trade_id, stop_loss=entry)
-                                trade.status = TradeStatus.RUNNING
-                                trade.sl_price = entry
-                                db.commit()
-                                logger.info(f"[{ticker}] 1R Reached. SL moved to BE ({entry:.2f})")
-                                # Fires once (status OPEN→RUNNING gate) — ERP marks position BREAK_EVEN.
-                                asyncio.create_task(fire_erp_webhook(
-                                    "trade.break_even", {"ticker": ticker, "price": entry}, trade_id))
-                                
-                            # Standard 3R trailing if not using partial TP
-                            if current_r >= 3.0:
-                                if action == "BUY":
-                                    new_sl = price - initial_risk
-                                    if new_sl > sl:
-                                        await self.broker.modify_order(trade_id, stop_loss=new_sl)
-                                        trade.sl_price = new_sl
-                                        db.commit()
-                                else:
-                                    new_sl = price + initial_risk
-                                    if new_sl < sl:
-                                        await self.broker.modify_order(trade_id, stop_loss=new_sl)
-                                        trade.sl_price = new_sl
-                                        db.commit()
-                        
-                        # 2. Adaptive Trailing Stops
-                        if FEATURE_FLAGS.get("adaptive_trailing", True) and not FEATURE_FLAGS.get("partial_tp", False):
-                            atr = trade.atr_at_entry or (initial_risk * 0.5)
-                            if 1.5 <= current_r < 2.5:
-                                # Trailing 2 ATR
-                                trailing_sl = price - 2 * atr if action == "BUY" else price + 2 * atr
-                                if (action == "BUY" and trailing_sl > sl) or (action == "SELL" and trailing_sl < sl):
-                                    await self.broker.modify_order(trade_id, stop_loss=trailing_sl)
-                                    trade.sl_price = trailing_sl
-                                    db.commit()
-                                    logger.info(f"[{ticker}] Adaptive Trailing: SL moved to {trailing_sl:.2f} (2 ATR)")
-                            elif 2.5 <= current_r < 3.5:
-                                # Trailing 1.5 ATR
-                                trailing_sl = price - 1.5 * atr if action == "BUY" else price + 1.5 * atr
-                                if (action == "BUY" and trailing_sl > sl) or (action == "SELL" and trailing_sl < sl):
-                                    await self.broker.modify_order(trade_id, stop_loss=trailing_sl)
-                                    trade.sl_price = trailing_sl
-                                    db.commit()
-                                    logger.info(f"[{ticker}] Adaptive Trailing: SL moved to {trailing_sl:.2f} (1.5 ATR)")
-                            elif current_r >= 3.5:
-                                # Chandelier Exit (trailing 1 ATR from extreme price)
-                                if action == "BUY":
-                                    peak = trade.highest_price
-                                    trailing_sl = peak - 1 * atr
-                                else:
-                                    peak = trade.lowest_price
-                                    trailing_sl = peak + 1 * atr
-                                if (action == "BUY" and trailing_sl > sl) or (action == "SELL" and trailing_sl < sl):
-                                    await self.broker.modify_order(trade_id, stop_loss=trailing_sl)
-                                    trade.sl_price = trailing_sl
-                                    db.commit()
-                                    logger.info(f"[{ticker}] Chandelier Exit: SL moved to {trailing_sl:.2f} (1 ATR from {'lowest' if action == 'SELL' else 'highest'} {peak:.2f})")
+                        await self._evaluate_position(snap, price)
 
-                        # Notify ERP once when SL first locks beyond entry (true trailing, not BE).
-                        sl_now = trade.sl_price
-                        in_profit_lock = sl_now is not None and (
-                            (action == "BUY" and sl_now > entry) or (action == "SELL" and sl_now < entry)
-                        )
-                        if in_profit_lock and not trade.trailing_notified:
-                            trade.trailing_notified = True
-                            db.commit()
-                            asyncio.create_task(fire_erp_webhook(
-                                "trade.trailing_activated",
-                                {"ticker": ticker, "price": price, "new_stop_loss": sl_now},
-                                trade_id))
-
-                        # 3. Check Standard Exit Conditions
-                        if sl is None:
-                            logger.warning(f"[{ticker}] SL price is None for trade {trade_id}. Skipping SL check.")
-                        if tp is None:
-                            logger.warning(f"[{ticker}] TP price is None for trade {trade_id}. Skipping TP check.")
-                        
-                        sl_hit = sl is not None and ((action == "BUY" and price <= sl) or (action == "SELL" and price >= sl))
-                        tp_hit = tp is not None and ((action == "BUY" and price >= tp) or (action == "SELL" and price <= tp))
-                        
-                        if sl_hit:
-                            logger.info(f"[{ticker}] SL hit at {price:.4f} (SL: {sl:.4f}) for trade {trade_id}. Closing position.")
-                            await self._execute_close(trade, sl, "SL/Trailing Hit", close_pct=1.0)
-                        elif tp_hit:
-                            logger.info(f"[{ticker}] TP hit at {price:.4f} (TP: {tp:.4f}) for trade {trade_id}. Closing position.")
-                            await self._execute_close(trade, tp, "TP Hit", close_pct=1.0)
-                        
-                        db.close()
-                        
             except Exception as e:
                 logger.error(f"Error in trade monitor: {e}")
+
+    async def _evaluate_position(self, snap, price):
+        """Run the SL/TP/trailing lifecycle for one position against one tick.
+
+        Operates on the in-memory `snap` (SimpleNamespace) and persists changes via
+        `_update_trade` / the broker — no DB session is held across awaits.
+        """
+        from backend.config import FEATURE_FLAGS
+
+        trade_id = snap.id
+        ticker = snap.ticker
+        action = snap.action
+        entry = snap.entry_price
+        sl = snap.sl_price          # original SL for this tick (exit check uses this, as before)
+        tp = snap.tp_price
+
+        initial_risk = abs(entry - sl)
+        if initial_risk <= 0:
+            return
+
+        current_r = (price - entry) / initial_risk if action == "BUY" else (entry - price) / initial_risk
+
+        # 1. Check Partial TP Levels (TP1: 1.0R, TP2: 2.0R, TP3: 3.0R)
+        if FEATURE_FLAGS.get("partial_tp", False):
+            if current_r >= 1.0 and not snap.tp1_hit:
+                logger.info(f"[{ticker}] TP1 target (1.0R) reached for trade {trade_id}.")
+                snap.tp1_hit = True
+                await self._update_trade(trade_id, tp1_hit=True)
+                await self._execute_close(snap, price, "TP1 Hit (1.0R)", close_pct=0.5)
+                # Move SL to Entry (BE)
+                await self.broker.modify_order(trade_id, stop_loss=entry)
+                snap.sl_price = entry
+                await self._update_trade(trade_id, sl_price=entry)
+                asyncio.create_task(fire_erp_webhook(
+                    "trade.break_even", {"ticker": ticker, "price": entry}, trade_id))
+                return
+
+            if current_r >= 2.0 and not snap.tp2_hit:
+                logger.info(f"[{ticker}] TP2 target (2.0R) reached for trade {trade_id}.")
+                snap.tp2_hit = True
+                await self._update_trade(trade_id, tp2_hit=True)
+                # Close 30% of original lot. Since 50% remains, we close 60% of the remaining lot (0.3 / 0.5 = 0.6)
+                await self._execute_close(snap, price, "TP2 Hit (2.0R)", close_pct=0.6)
+                # Move SL to 1.0R Profit Lock
+                lock_sl = entry + initial_risk if action == "BUY" else entry - initial_risk
+                await self.broker.modify_order(trade_id, stop_loss=lock_sl)
+                snap.sl_price = lock_sl
+                await self._update_trade(trade_id, sl_price=lock_sl)
+                return
+
+            if current_r >= 3.0 and not snap.tp3_hit:
+                logger.info(f"[{ticker}] TP3 target (3.0R) reached for trade {trade_id}. Closing remaining position.")
+                snap.tp3_hit = True
+                await self._update_trade(trade_id, tp3_hit=True)
+                await self._execute_close(snap, price, "TP3 Hit (3.0R)", close_pct=1.0)
+                return
+        else:
+            # Standard 1R BE update if not using partial TP
+            if current_r >= 1.0 and snap.status == TradeStatus.OPEN:
+                await self.broker.modify_order(trade_id, stop_loss=entry)
+                snap.status = TradeStatus.RUNNING
+                snap.sl_price = entry
+                await self._update_trade(trade_id, status=TradeStatus.RUNNING, sl_price=entry)
+                logger.info(f"[{ticker}] 1R Reached. SL moved to BE ({entry:.2f})")
+                # Fires once (status OPEN→RUNNING gate) — ERP marks position BREAK_EVEN.
+                asyncio.create_task(fire_erp_webhook(
+                    "trade.break_even", {"ticker": ticker, "price": entry}, trade_id))
+
+            # Standard 3R trailing if not using partial TP
+            if current_r >= 3.0:
+                if action == "BUY":
+                    new_sl = price - initial_risk
+                    if new_sl > sl:
+                        await self.broker.modify_order(trade_id, stop_loss=new_sl)
+                        snap.sl_price = new_sl
+                        await self._update_trade(trade_id, sl_price=new_sl)
+                else:
+                    new_sl = price + initial_risk
+                    if new_sl < sl:
+                        await self.broker.modify_order(trade_id, stop_loss=new_sl)
+                        snap.sl_price = new_sl
+                        await self._update_trade(trade_id, sl_price=new_sl)
+
+        # 2. Adaptive Trailing Stops
+        if FEATURE_FLAGS.get("adaptive_trailing", True) and not FEATURE_FLAGS.get("partial_tp", False):
+            atr = snap.atr_at_entry or (initial_risk * 0.5)
+            if 1.5 <= current_r < 2.5:
+                # Trailing 2 ATR
+                trailing_sl = price - 2 * atr if action == "BUY" else price + 2 * atr
+                if (action == "BUY" and trailing_sl > sl) or (action == "SELL" and trailing_sl < sl):
+                    await self.broker.modify_order(trade_id, stop_loss=trailing_sl)
+                    snap.sl_price = trailing_sl
+                    await self._update_trade(trade_id, sl_price=trailing_sl)
+                    logger.info(f"[{ticker}] Adaptive Trailing: SL moved to {trailing_sl:.2f} (2 ATR)")
+            elif 2.5 <= current_r < 3.5:
+                # Trailing 1.5 ATR
+                trailing_sl = price - 1.5 * atr if action == "BUY" else price + 1.5 * atr
+                if (action == "BUY" and trailing_sl > sl) or (action == "SELL" and trailing_sl < sl):
+                    await self.broker.modify_order(trade_id, stop_loss=trailing_sl)
+                    snap.sl_price = trailing_sl
+                    await self._update_trade(trade_id, sl_price=trailing_sl)
+                    logger.info(f"[{ticker}] Adaptive Trailing: SL moved to {trailing_sl:.2f} (1.5 ATR)")
+            elif current_r >= 3.5:
+                # Chandelier Exit (trailing 1 ATR from extreme price)
+                if action == "BUY":
+                    peak = snap.highest_price
+                    trailing_sl = peak - 1 * atr
+                else:
+                    peak = snap.lowest_price
+                    trailing_sl = peak + 1 * atr
+                if (action == "BUY" and trailing_sl > sl) or (action == "SELL" and trailing_sl < sl):
+                    await self.broker.modify_order(trade_id, stop_loss=trailing_sl)
+                    snap.sl_price = trailing_sl
+                    await self._update_trade(trade_id, sl_price=trailing_sl)
+                    logger.info(f"[{ticker}] Chandelier Exit: SL moved to {trailing_sl:.2f} (1 ATR from {'lowest' if action == 'SELL' else 'highest'} {peak:.2f})")
+
+        # Notify ERP once when SL first locks beyond entry (true trailing, not BE).
+        sl_now = snap.sl_price
+        in_profit_lock = sl_now is not None and (
+            (action == "BUY" and sl_now > entry) or (action == "SELL" and sl_now < entry)
+        )
+        if in_profit_lock and not snap.trailing_notified:
+            snap.trailing_notified = True
+            await self._update_trade(trade_id, trailing_notified=True)
+            asyncio.create_task(fire_erp_webhook(
+                "trade.trailing_activated",
+                {"ticker": ticker, "price": price, "new_stop_loss": sl_now},
+                trade_id))
+
+        # 3. Check Standard Exit Conditions
+        if sl is None:
+            logger.warning(f"[{ticker}] SL price is None for trade {trade_id}. Skipping SL check.")
+        if tp is None:
+            logger.warning(f"[{ticker}] TP price is None for trade {trade_id}. Skipping TP check.")
+
+        sl_hit = sl is not None and ((action == "BUY" and price <= sl) or (action == "SELL" and price >= sl))
+        tp_hit = tp is not None and ((action == "BUY" and price >= tp) or (action == "SELL" and price <= tp))
+
+        if sl_hit:
+            logger.info(f"[{ticker}] SL hit at {price:.4f} (SL: {sl:.4f}) for trade {trade_id}. Closing position.")
+            await self._execute_close(snap, sl, "SL/Trailing Hit", close_pct=1.0)
+        elif tp_hit:
+            logger.info(f"[{ticker}] TP hit at {price:.4f} (TP: {tp:.4f}) for trade {trade_id}. Closing position.")
+            await self._execute_close(snap, tp, "TP Hit", close_pct=1.0)
 
     async def process_regime_changes(self):
         logger.info("Execution Engine listening to CH_MARKET_REGIME...")

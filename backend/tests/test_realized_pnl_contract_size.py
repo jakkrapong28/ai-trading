@@ -48,7 +48,9 @@ async def test_paper_broker_close_uses_contract_size_and_fee():
     db = MagicMock()
     db.query.return_value.filter.return_value.first.return_value = trade
 
-    with patch("backend.brokers.paper.SessionLocal", return_value=db):
+    # close_order now runs its DB work off the event loop via run_db(), which
+    # builds the session from the shared core factory — patch it there.
+    with patch("backend.shared.database.core.SessionLocal", return_value=db):
         res = await PaperBroker().close_order("t1", exit_price=2010.0)
 
     assert res["realized_pnl"] == pytest.approx(100.0)   # not 1.0

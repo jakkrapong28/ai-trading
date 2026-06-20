@@ -61,3 +61,13 @@ FEATURE_FLAGS = {
     "confirmation_candle": False, # Phase B.2 — รอ SMC เปิดก่อน
     "claude_fallback": False,
 }
+
+# H1 — adaptive take-profit: take-profit RR per market regime. Empty = disabled →
+# the live engine keeps the fixed RR 2.0 (tp = 2×SL). Fill in a proven map (e.g.
+# {"BULL": 2.5, "BEAR": 2.5, "SIDEWAYS": 1.2, "VOLATILE": 1.5}) only after a
+# walk-forward A/B validates it (Roadmap ข้อ 3). Keeps live == backtest.
+RR_BY_REGIME = {}
+
+# H2 — session-quality gate: minimum get_session_boost required to take an entry
+# (0 = off). London/NY overlap=1.1, London/NY=1.0, Asian=0.8, Sydney=0.7.
+MIN_SESSION_BOOST = float(os.getenv("MIN_SESSION_BOOST", "0"))

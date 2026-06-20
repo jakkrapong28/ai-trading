@@ -230,6 +230,31 @@ def _zone_touch(close: float, atr: float, zones, kind: str) -> bool:
 _TIER_RANK = {"C": 0, "B": 1, "A": 2}
 
 
+def calculate_adx(df: pd.DataFrame, period: int = 14) -> float:
+    """Wilder's ADX — trend-strength / chop discriminator. Low ADX (<~20-25) =
+    range/chop where breakout entries get whipsawed. Returns the latest ADX, or
+    0.0 when undefined (too few bars / flat tape)."""
+    if df is None or len(df) < period + 2:
+        return 0.0
+    high, low, close = df["high"], df["low"], df["close"]
+    up = high.diff()
+    down = -low.diff()
+    plus_dm = ((up > down) & (up > 0)) * up
+    minus_dm = ((down > up) & (down > 0)) * down
+    tr = pd.concat([
+        high - low,
+        (high - close.shift(1)).abs(),
+        (low - close.shift(1)).abs(),
+    ], axis=1).max(axis=1)
+    atr = tr.ewm(alpha=1 / period, adjust=False).mean()
+    plus_di = 100 * (plus_dm.ewm(alpha=1 / period, adjust=False).mean() / atr)
+    minus_di = 100 * (minus_dm.ewm(alpha=1 / period, adjust=False).mean() / atr)
+    denom = (plus_di + minus_di).replace(0, np.nan)
+    dx = 100 * ((plus_di - minus_di).abs() / denom)
+    adx = dx.ewm(alpha=1 / period, adjust=False).mean().iloc[-1]
+    return float(adx) if not pd.isna(adx) else 0.0
+
+
 def evaluate_smc_signal(
     df: pd.DataFrame,
     atr: float,
@@ -240,6 +265,9 @@ def evaluate_smc_signal(
     fvg_gap_atr: float = 0.3,
     min_tier: str = "C",
     require_bias: bool = False,
+    block_volatile_regime: bool = False,
+    max_atr_expansion: Optional[float] = None,
+    min_adx: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Directional, TIER-graded SMC signal.
 
@@ -252,6 +280,12 @@ def evaluate_smc_signal(
                      cleaner trades.
       require_bias — only trade WITH the H1 macro trend (BUY needs Bullish, SELL
                      needs Bearish); blocks the choppy counter-bias blow-ups.
+      block_volatile_regime — stand aside entirely when the H1 regime is
+                     "VOLATILE" (which the rest of the gate otherwise ignores).
+      max_atr_expansion — stand aside when current ATR is more than this multiple
+                     of the window's median true-range (a volatility shock).
+      min_adx      — stand aside when ADX is below this (range/chop), where
+                     breakout entries get whipsawed (the low-vol disaster windows).
     """
     wait = {
         "action": "WAIT", "confidence": 0.0, "tier": None, "score": 0.0,
@@ -259,6 +293,25 @@ def evaluate_smc_signal(
     }
     if df is None or len(df) < 20 or atr <= 0:
         return wait
+
+    # Volatility stand-aside gates — the catastrophic OOS windows are clustered in
+    # exploding-volatility tape where structural stops get whipsawed. Both knobs
+    # default off so live behaviour is unchanged until a walk-forward proves them.
+    if block_volatile_regime and regime == "VOLATILE":
+        return {**wait, "reason": "[SMC] stand aside — regime VOLATILE"}
+    if max_atr_expansion is not None:
+        tr = pd.concat([
+            df["high"] - df["low"],
+            (df["high"] - df["close"].shift(1)).abs(),
+            (df["low"] - df["close"].shift(1)).abs(),
+        ], axis=1).max(axis=1)
+        baseline_tr = float(tr.median())
+        if baseline_tr > 0 and (atr / baseline_tr) > max_atr_expansion:
+            return {**wait, "reason": f"[SMC] stand aside — ATR expansion {atr / baseline_tr:.1f}x"}
+    if min_adx is not None:
+        adx = calculate_adx(df)
+        if adx < min_adx:
+            return {**wait, "reason": f"[SMC] stand aside — chop (ADX {adx:.0f} < {min_adx:.0f})"}
 
     levels = detect_smc_levels(df, atr, ob_size_atr, fvg_gap_atr)
     close = float(df["close"].iloc[-1])

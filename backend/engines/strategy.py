@@ -223,6 +223,11 @@ class StrategyEngine:
                             if smc_sig["action"] in ("BUY", "SELL"):
                                 action = smc_sig["action"]
                                 boost = get_session_boost(datetime.now(timezone.utc))
+                                # H2 — session gate: skip low-quality sessions (default off).
+                                from backend.config import MIN_SESSION_BOOST
+                                if MIN_SESSION_BOOST and boost < MIN_SESSION_BOOST:
+                                    logger.info(f"[Strategy] {ticker} {action} skipped — session boost {boost} < {MIN_SESSION_BOOST}")
+                                    continue
                                 conf = min(1.0, smc_sig["confidence"] * boost)
 
                                 # Confirmation Candle check

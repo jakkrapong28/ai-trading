@@ -68,6 +68,36 @@ COMMISSION_PCT = {
     "BTCUSDT": 0.0001,  # 0.01%
 }
 
+def _experiment_knobs() -> Dict[str, Any]:
+    """Filter/circuit-breaker knobs read from env so a walk-forward A/B can be run
+    without editing code (kept default-off → baseline behaviour unchanged):
+      BT_CB_MAX_LOSSES, BT_CB_COOLDOWN  — consecutive-loss circuit breaker
+      BT_MIN_ADX                        — chop guard (skip entries when ADX below)
+      BT_BLOCK_VOLATILE                 — stand aside in VOLATILE regime (1/0)
+      BT_MAX_ATR_EXPANSION              — stand aside on ATR shock
+      BT_RR_{BULL,BEAR,SIDEWAYS,VOLATILE} — adaptive take-profit RR per regime (H1)
+      BT_MIN_SESSION                    — session gate: skip entries below this boost (H2)
+    """
+    knobs: Dict[str, Any] = {
+        "cb_max_losses": int(os.getenv("BT_CB_MAX_LOSSES", "0")),
+        "cb_cooldown_bars": int(os.getenv("BT_CB_COOLDOWN", "24")),
+        "smc_block_volatile": os.getenv("BT_BLOCK_VOLATILE", "0") == "1",
+    }
+    if os.getenv("BT_MIN_ADX"):
+        knobs["smc_min_adx"] = float(os.getenv("BT_MIN_ADX"))
+    if os.getenv("BT_MAX_ATR_EXPANSION"):
+        knobs["smc_max_atr_expansion"] = float(os.getenv("BT_MAX_ATR_EXPANSION"))
+    # H1 — adaptive TP: build a regime→RR map from any BT_RR_* that are set.
+    rr_by_regime = {r: float(os.getenv(f"BT_RR_{r}"))
+                    for r in ("BULL", "BEAR", "SIDEWAYS", "VOLATILE") if os.getenv(f"BT_RR_{r}")}
+    if rr_by_regime:
+        knobs["rr_by_regime"] = rr_by_regime
+    # H2 — session gate
+    if os.getenv("BT_MIN_SESSION"):
+        knobs["min_session_boost"] = float(os.getenv("BT_MIN_SESSION"))
+    return knobs
+
+
 def apply_trade_costs(trade: dict, symbol: str) -> dict:
     spread_cost = SPREAD_COST_DICT.get(symbol, 5.0) * trade.get("lot", 0.01)
     commission = abs(trade.get("pnl", 0.0)) * COMMISSION_PCT.get(symbol, 0.0)
@@ -119,18 +149,45 @@ def calculate_risk_of_ruin(pnls: List[float], initial_equity: float = 45750.00, 
     ruined_paths = min_equity_per_path <= initial_equity * (1 - ruin_fraction)
     return float(np.sum(ruined_paths)) / num_paths
 
+def _window_vol_stats(df: pd.DataFrame, oos_start: int, oos_end: int) -> Dict[str, float]:
+    """Diagnostic: characterise an OOS window's volatility so we can see what the
+    catastrophic windows have in common. Returns mean/max H1 vol_score and the
+    fraction of bars whose regime is VOLATILE, using the same regime call the
+    backtest/live engine use.
+    """
+    from backend.engines.market_regime import calculate_regime_from_h1
+    vols: List[float] = []
+    volatile_bars = 0
+    for i in range(oos_start, oos_end):
+        regime_window = df.iloc[max(0, i - 200):i + 1][["open", "high", "low", "close", "volume"]]
+        if len(regime_window) < 50:
+            continue
+        regime, _, _, _, vol_score = calculate_regime_from_h1(regime_window)
+        vols.append(vol_score)
+        if regime == "VOLATILE":
+            volatile_bars += 1
+    n = len(vols)
+    return {
+        "mean_vol": float(np.mean(vols)) if n else 0.0,
+        "max_vol": float(np.max(vols)) if n else 0.0,
+        "pct_volatile": (volatile_bars / n * 100.0) if n else 0.0,
+    }
+
+
 def optimize_smc_parameters(
     df: pd.DataFrame,
     symbol: str,
     smc_v2: bool = False,
 ) -> Dict[str, Any]:
     best_score = -1.0
+    knobs = _experiment_knobs()
     best_cfg = {
         "smc_strategy": True,
         "smc_v2": smc_v2,
         "ob_size_atr": 0.5,
         "fvg_gap_atr": 0.3,
-        "mtf_strategy": True
+        "mtf_strategy": True,
+        **knobs,
     }
     best_result = None
 
@@ -145,7 +202,8 @@ def optimize_smc_parameters(
                 "smc_v2": smc_v2,
                 "ob_size_atr": ob,
                 "fvg_gap_atr": fvg,
-                "mtf_strategy": True
+                "mtf_strategy": True,
+                **knobs,
             }
             result = run_strategy_backtest(df, symbol, cfg=cfg)
             m = result["metrics"]
@@ -257,6 +315,9 @@ def run_strategy_backtest(
                 ob_size_atr=ob_size, fvg_gap_atr=fvg_gap,
                 min_tier=cfg.get("smc_min_tier", "C"),
                 require_bias=cfg.get("smc_require_bias", False),
+                block_volatile_regime=cfg.get("smc_block_volatile", False),
+                max_atr_expansion=cfg.get("smc_max_atr_expansion"),
+                min_adx=cfg.get("smc_min_adx"),
             )
             signal = {
                 "action": sig["action"],
@@ -297,6 +358,13 @@ def run_strategy_backtest(
         if signal["action"] not in ("BUY", "SELL"):
             continue
 
+        # H2 — session gate: skip entries in low-quality sessions (Asian/Sydney).
+        min_session = cfg.get("min_session_boost", 0.0) if cfg else 0.0
+        if min_session:
+            from backend.core.smc import get_session_boost
+            if get_session_boost(row["timestamp"]) < min_session:
+                continue
+
         entry = float(row["close"])
         atr = indicators["atr"]
         pos = calculate_position_size(symbol, equity, RISK_CONFIG["maxRiskPerTradePct"], atr, ATR_MULT)
@@ -320,7 +388,9 @@ def run_strategy_backtest(
                 lot = pos["lot"] * stop_dist / risk
 
         risk = abs(entry - sl)
-        tp = entry + risk * RR_RATIO if action == "BUY" else entry - risk * RR_RATIO
+        # H1 — adaptive take-profit: RR per regime (default = fixed RR_RATIO).
+        rr = (cfg.get("rr_by_regime") or {}).get(regime_at_bar, RR_RATIO) if cfg else RR_RATIO
+        tp = entry + risk * rr if action == "BUY" else entry - risk * rr
         active_trade = {
             "action": action,
             "strategy_type": signal.get("strategy_type", "UNKNOWN"),
@@ -342,12 +412,21 @@ def run_strategy_backtest(
         "config": cfg,
     }
 
-def run_walk_forward_backtest(df: pd.DataFrame, symbol: str, smc_strategy: bool = True, smc_v2: bool = False) -> List[Dict[str, Any]]:
-    """Runs a Walk-Forward backtest with 500-bar rolling in-sample and 200-bar out-of-sample windows."""
-    in_sample_len = 500
-    oos_len = 200
-    step_len = 200
-    
+def run_walk_forward_backtest(
+    df: pd.DataFrame, symbol: str, smc_strategy: bool = True, smc_v2: bool = False,
+    with_diagnostics: bool = False,
+    in_sample_len: Optional[int] = None, oos_len: Optional[int] = None, step_len: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """Walk-forward backtest with a rolling in-sample → out-of-sample split.
+
+    Window sizes default to 500/200/200 bars but can be overridden by argument or
+    env (BT_IN_LEN/BT_OOS_LEN/BT_STEP_LEN). A bigger OOS window raises trades-per
+    -window so fewer windows are statistically-meaningless "THIN" (<5 trades).
+    """
+    in_sample_len = in_sample_len or int(os.getenv("BT_IN_LEN", "500"))
+    oos_len = oos_len or int(os.getenv("BT_OOS_LEN", "200"))
+    step_len = step_len or int(os.getenv("BT_STEP_LEN", "200"))
+
     results = []
     num_bars = len(df)
     
@@ -379,13 +458,16 @@ def run_walk_forward_backtest(df: pd.DataFrame, symbol: str, smc_strategy: bool 
         oos_metrics = oos_res["metrics"].copy()
         oos_metrics["risk_of_ruin"] = ror
         
-        results.append({
+        window = {
             "in_sample_range": (start_idx, in_sample_end),
             "oos_range": (in_sample_end, oos_end),
             "best_config": best_cfg,
             "oos_metrics": oos_metrics,
             "trades_count": len(oos_res["trades"])
-        })
+        }
+        if with_diagnostics:
+            window["vol_stats"] = _window_vol_stats(df, in_sample_end, oos_end)
+        results.append(window)
         
     return results
 
@@ -698,12 +780,12 @@ def run_walk_forward_report(symbols: List[str] = None, interval: str = "1h", ran
             continue
             
         print(f"\n[RUN] Walk-Forward Validation (SMC Strategy Sweep)...")
-        results = run_walk_forward_backtest(df, sym, smc_strategy=True)
-        
+        results = run_walk_forward_backtest(df, sym, smc_strategy=True, with_diagnostics=True)
+
         print(f"\n  Walk-Forward Windows Report for {sym}:")
-        print("-"*105)
-        print(f"{'Window':<8} | {'In-Sample':<10} | {'Out-Sample':<10} | {'Trades':<6} | {'Sharpe':<6} | {'PF':<5} | {'MaxDD %':<7} | {'Ruin %':<6} | {'Verdict':<7}")
-        print("-"*105)
+        print("-"*135)
+        print(f"{'Window':<8} | {'In-Sample':<10} | {'Out-Sample':<10} | {'Trades':<6} | {'Sharpe':<6} | {'PF':<5} | {'MaxDD %':<7} | {'Ruin %':<6} | {'VolMean':<7} | {'VolMax':<6} | {'%Volat':<6} | {'Verdict':<7}")
+        print("-"*135)
         
         passed_windows = 0
         total_windows = len(results)
@@ -734,13 +816,17 @@ def run_walk_forward_report(symbols: List[str] = None, interval: str = "1h", ran
             else:
                 verdict = "FAIL 🔴"
                 
-            print(f"#{idx+1:<7} | {is_r:<10} | {os_r:<10} | {res['trades_count']:<6} | {sharpe:<6.2f} | {pf:<5.2f} | {max_dd:<7.2f} | {ror*100:<5.1f}% | {verdict}")
+            vs = res.get("vol_stats", {})
+            vol_mean = vs.get("mean_vol", 0.0)
+            vol_max = vs.get("max_vol", 0.0)
+            pct_vol = vs.get("pct_volatile", 0.0)
+            print(f"#{idx+1:<7} | {is_r:<10} | {os_r:<10} | {res['trades_count']:<6} | {sharpe:<6.2f} | {pf:<5.2f} | {max_dd:<7.2f} | {ror*100:<5.1f}% | {vol_mean:<7.1f} | {vol_max:<6.1f} | {pct_vol:<5.1f}% | {verdict}")
             
             # Print best config parameters
             cfg = res["best_config"]
             print(f"          Best Config: ob_size_atr={cfg.get('ob_size_atr')}, fvg_gap_atr={cfg.get('fvg_gap_atr')}")
             
-        print("-"*105)
+        print("-"*135)
         pass_ratio = (passed_windows / total_windows * 100) if total_windows > 0 else 0.0
         print(f"  Result: {passed_windows}/{total_windows} windows passed ({pass_ratio:.1f}%)")
         if pass_ratio >= 60.0:

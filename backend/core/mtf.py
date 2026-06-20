@@ -101,7 +101,13 @@ async def verify_d1_candle_timestamps(df: pd.DataFrame) -> int:
     If closed_count == 0, notifies critical alert that D1 Bias Lock won't function.
     """
     from backend.alert import send_alert
-    closed_count = sum(df.apply(lambda r: is_candle_closed("D1", r.name), axis=1))
+    # get_ohlc() returns a RangeIndex with `timestamp` as a column, so use the
+    # column when present; fall back to the index for callers that index by time.
+    if "timestamp" in df.columns:
+        ts_series = pd.to_datetime(df["timestamp"])
+    else:
+        ts_series = pd.to_datetime(pd.Series(df.index))
+    closed_count = int(sum(is_candle_closed("D1", ts) for ts in ts_series))
     if closed_count == 0:
         await send_alert("CRITICAL", "❌ D1 timestamp convention mismatch — D1 Bias Lock จะไม่ทำงาน")
     logger.info(f"D1 candle pre-flight: {closed_count}/{len(df)} bars match convention")

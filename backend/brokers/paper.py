@@ -5,7 +5,7 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime, timezone
 
 from backend.brokers.base import BrokerAdapter
-from backend.shared.database.core import SessionLocal
+from backend.shared.database.core import run_db
 from backend.shared.database.models import Trade, TradeStatus, TradeAction
 from backend.core.base import trade_pnl, compute_fee
 from backend.alert import send_alert
@@ -27,46 +27,48 @@ class PaperBroker(BrokerAdapter):
     async def get_mt5_positions(self) -> List[str]:
         if self._mock_mt5_positions is not None:
             return self._mock_mt5_positions
-        db = SessionLocal()
-        try:
+
+        def _work(db):
             trades = db.query(Trade).filter(
                 Trade.status.in_([TradeStatus.OPEN, TradeStatus.RUNNING, TradeStatus.PARTIAL])
             ).all()
             return [t.id for t in trades]
-        finally:
-            db.close()
+        return await run_db(_work)
 
     async def reconcile_positions(self):
-        db = SessionLocal()
         try:
-            db_positions = db.query(Trade).filter(
-                Trade.status.in_([TradeStatus.OPEN, TradeStatus.RUNNING, TradeStatus.PARTIAL])
-            ).all()
+            def _open_ids(db):
+                return [
+                    t.id for t in db.query(Trade).filter(
+                        Trade.status.in_([TradeStatus.OPEN, TradeStatus.RUNNING, TradeStatus.PARTIAL])
+                    ).all()
+                ]
+            db_position_ids = await run_db(_open_ids)
             mt5_positions = await self.get_mt5_positions()
-            diverged_count = 0
-            for pos in db_positions:
-                if pos.id not in mt5_positions:
-                    logger.warning(f"⚠️ Position {pos.id} diverged — DB says OPEN, MT5 says CLOSED")
-                    pos.status = TradeStatus.CLOSED
-                    pos.closed_at = datetime.utcnow()
-                    diverged_count += 1
-            if diverged_count > 0:
-                db.commit()
-                await send_alert("ERROR", f"⚠️ Position {diverged_count} trades diverged — auto-closed in DB")
+            diverged = [pid for pid in db_position_ids if pid not in mt5_positions]
+            for pid in diverged:
+                logger.warning(f"⚠️ Position {pid} diverged — DB says OPEN, MT5 says CLOSED")
+
+            if diverged:
+                def _close(db):
+                    for pid in diverged:
+                        pos = db.query(Trade).filter(Trade.id == pid).first()
+                        if pos:
+                            pos.status = TradeStatus.CLOSED
+                            pos.closed_at = datetime.utcnow()
+                    db.commit()
+                await run_db(_close)
+                await send_alert("ERROR", f"⚠️ Position {len(diverged)} trades diverged — auto-closed in DB")
         except Exception as e:
-            db.rollback()
             logger.error(f"Error reconciling positions: {e}")
-        finally:
-            db.close()
 
     async def place_order(self, ticker: str, action: str, lot_size: float, stop_loss: float, take_profit: float, entry_price: float = None, market_regime: str = None, atr_at_entry: float = None) -> Dict[str, Any]:
         if entry_price is None:
             raise ValueError("entry_price is required for PaperBroker")
 
         trade_id = str(uuid.uuid4())
-        
-        db = SessionLocal()
-        try:
+
+        def _work(db):
             trade = Trade(
                 id=trade_id,
                 ticker=ticker,
@@ -81,25 +83,23 @@ class PaperBroker(BrokerAdapter):
             )
             db.add(trade)
             db.commit()
-            
+
             return {
                 "order_id": trade_id,
                 "status": "OPEN",
                 "filled_price": entry_price
             }
-        finally:
-            db.close()
+        return await run_db(_work)
 
     async def close_order(self, order_id: str, exit_price: float = None) -> Dict[str, Any]:
         if exit_price is None:
             raise ValueError("exit_price is required for closing paper order")
-            
-        db = SessionLocal()
-        try:
+
+        def _work(db):
             trade = db.query(Trade).filter(Trade.id == order_id).first()
             if not trade:
                 raise ValueError(f"Trade {order_id} not found")
-                
+
             trade.status = TradeStatus.CLOSED
             trade.exit_price = exit_price
             trade.closed_at = datetime.utcnow()
@@ -120,8 +120,7 @@ class PaperBroker(BrokerAdapter):
                 "realized_pnl": realized,
                 "fee": fee
             }
-        finally:
-            db.close()
+        return await run_db(_work)
 
     async def partial_close_order(self, order_id: str, close_pct: float, exit_price: float) -> Dict[str, Any]:
         if exit_price is None:
@@ -129,8 +128,7 @@ class PaperBroker(BrokerAdapter):
         if not (0.0 < close_pct < 1.0):
             raise ValueError("close_pct must be between 0 and 1 (exclusive)")
 
-        db = SessionLocal()
-        try:
+        def _work(db):
             trade = db.query(Trade).filter(Trade.id == order_id).first()
             if not trade:
                 raise ValueError(f"Trade {order_id} not found")
@@ -160,39 +158,35 @@ class PaperBroker(BrokerAdapter):
                 "realized_pnl": realized,
                 "fee": fee
             }
-        finally:
-            db.close()
+        return await run_db(_work)
 
     async def modify_order(self, order_id: str, stop_loss: float = None, take_profit: float = None) -> Dict[str, Any]:
-        db = SessionLocal()
-        try:
+        def _work(db):
             trade = db.query(Trade).filter(Trade.id == order_id).first()
             if not trade:
                 raise ValueError(f"Trade {order_id} not found")
-                
+
             if stop_loss is not None:
                 trade.sl_price = stop_loss
             if take_profit is not None:
                 trade.tp_price = take_profit
-                
+
             db.commit()
-            
+
             return {
                 "order_id": order_id,
                 "status": trade.status.value,
                 "sl_price": trade.sl_price,
                 "tp_price": trade.tp_price
             }
-        finally:
-            db.close()
+        return await run_db(_work)
 
     async def get_positions(self) -> List[Dict[str, Any]]:
-        db = SessionLocal()
-        try:
+        def _work(db):
             trades = db.query(Trade).filter(
                 Trade.status.in_([TradeStatus.OPEN, TradeStatus.RUNNING, TradeStatus.PARTIAL])
             ).all()
-            
+
             return [
                 {
                     "order_id": t.id,
@@ -206,8 +200,7 @@ class PaperBroker(BrokerAdapter):
                 }
                 for t in trades
             ]
-        finally:
-            db.close()
+        return await run_db(_work)
 
 class SimulationBroker(PaperBroker):
     """

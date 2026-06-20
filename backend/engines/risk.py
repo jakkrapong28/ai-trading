@@ -368,9 +368,13 @@ class RiskEngine:
                     )
                     lot_size = kelly_res["lot"]
                     
-                    # Set volatility-adjusted SL/TP (e.g. 2 ATR SL and 4 ATR TP)
+                    # Set volatility-adjusted SL/TP. SL = 2 ATR; TP via adaptive
+                    # RR per regime (H1). Default RR_BY_REGIME is empty → rr 2.0 →
+                    # tp = 2×SL = 4 ATR (unchanged) until a walk-forward proves a map.
+                    from backend.config import RR_BY_REGIME
                     sl_dist = max(atr * 2, db_sl)
-                    tp_dist = max(atr * 4, db_tp)
+                    rr = RR_BY_REGIME.get(regime, 2.0)
+                    tp_dist = max(sl_dist * rr, db_tp)
                     
                     # Portfolio heat check
                     heat_ok, heat_msg = check_portfolio_heat(decision.ticker, lot_size, sl_dist, self.account_balance)

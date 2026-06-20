@@ -55,3 +55,12 @@ async def test_verify_d1_candle_timestamps(monkeypatch):
     count_partial = await verify_d1_candle_timestamps(df_partial)
     expected = 2 if (today + timedelta(days=1)) <= now else 1
     assert count_partial == expected
+
+    # 3. Production shape from CandleManager.get_ohlc(): RangeIndex + `timestamp`
+    # column. This is the case that triggered the live
+    # "'int' object has no attribute 'tzinfo'" crash — must not throw.
+    df_prod = pd.DataFrame({
+        "open": [1, 2], "high": [1, 2], "low": [1, 2], "close": [1, 2],
+        "volume": [0, 0], "timestamp": [two_days_ago, yesterday],
+    })
+    assert await verify_d1_candle_timestamps(df_prod) == 2

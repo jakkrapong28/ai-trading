@@ -39,6 +39,7 @@ tools/.mt5_session.json
 .env.test.local
 .env.production.local
 *.env*
+!*.env.example
 *.pem
 *.key
 
