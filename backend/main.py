@@ -135,8 +135,11 @@ manager = ConnectionManager()
 
 # Global State Variables for dashboard APIs
 current_symbol = "XAUUSD"
-current_mode = "watch"
-os.environ["CURRENT_MODE"] = "watch"
+# Honor CURRENT_MODE from the environment (.env) so paper auto-execute survives a
+# restart. Defaults to the safe "watch" when unset. Was hardcoded "watch" here,
+# which also stomped any env-provided value.
+current_mode = os.getenv("CURRENT_MODE", "watch")
+os.environ["CURRENT_MODE"] = current_mode
 current_risk_input = {
     "lot": 0.01,
     "stopDistance": 20.0,

@@ -53,7 +53,7 @@ FEATURE_FLAGS = {
     "emergency_stop": True,
     "alerting": True,
     "correlation_cap": True,      # Basic cap — active ตั้งแต่ Phase 1B
-    "smc_strategy": False,        # Phase B.2 — รอ closed trades ≥ 50
+    "smc_strategy": True,         # Path A — paper auto-execute ด้วยสมอง SMC ที่ validate แล้ว
     "kelly_sizing": False,        # Phase 3 (หลัง backtest validate)
     "mtf_strategy": True,         # Phase B.2 — เปิดแล้ว (is_candle_closed fixed)
     "session_filter": False,
@@ -71,3 +71,10 @@ RR_BY_REGIME = {}
 # H2 — session-quality gate: minimum get_session_boost required to take an entry
 # (0 = off). London/NY overlap=1.1, London/NY=1.0, Asian=0.8, Sydney=0.7.
 MIN_SESSION_BOOST = float(os.getenv("MIN_SESSION_BOOST", "0"))
+
+# Live SMC tuning — keep the live engine == the validated walk-forward best config.
+# ADX(20) chop-guard was proven to lift the OOS pass-ratio once windows aren't thin
+# (SYSTEM_UPGRADE §16); min_tier="C" is the base v2 grade. RR_BY_REGIME stays empty
+# (H1 adaptive-TP was only marginal, §18) so live keeps the fixed RR 2.0.
+SMC_LIVE_MIN_TIER = os.getenv("SMC_LIVE_MIN_TIER", "C")
+SMC_LIVE_MIN_ADX = float(os.getenv("SMC_LIVE_MIN_ADX", "20"))

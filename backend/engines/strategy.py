@@ -216,8 +216,12 @@ class StrategyEngine:
                                 smc_df["close"].astype(float).tolist()
                             )
                             vp = calculate_volume_profile(smc_df)
+                            # Pass the validated knobs so the live signal == the
+                            # walk-forward best config (live == backtest).
+                            from backend.config import SMC_LIVE_MIN_TIER, SMC_LIVE_MIN_ADX
                             smc_sig = evaluate_smc_signal(
-                                smc_df, atr, indicators, macro_1h, regime.regime
+                                smc_df, atr, indicators, macro_1h, regime.regime,
+                                min_tier=SMC_LIVE_MIN_TIER, min_adx=SMC_LIVE_MIN_ADX,
                             )
 
                             if smc_sig["action"] in ("BUY", "SELL"):
