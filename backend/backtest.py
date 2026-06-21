@@ -77,12 +77,27 @@ def _experiment_knobs() -> Dict[str, Any]:
       BT_MAX_ATR_EXPANSION              — stand aside on ATR shock
       BT_RR_{BULL,BEAR,SIDEWAYS,VOLATILE} — adaptive take-profit RR per regime (H1)
       BT_MIN_SESSION                    — session gate: skip entries below this boost (H2)
+      BT_MR_ROUTER                      — route chop windows to mean-reversion (ข้อ 4, 1/0)
+      BT_MR_ADX                         — ADX below which we trade MR instead of SMC
+      BT_MR_RSI_BUY/RSI_SELL/LOOKBACK/BAND_ATR/RR — MR engine params
     """
     knobs: Dict[str, Any] = {
         "cb_max_losses": int(os.getenv("BT_CB_MAX_LOSSES", "0")),
         "cb_cooldown_bars": int(os.getenv("BT_CB_COOLDOWN", "24")),
         "smc_block_volatile": os.getenv("BT_BLOCK_VOLATILE", "0") == "1",
     }
+    # ข้อ 4 — per-regime router: hand low-ADX (range/chop) windows to the
+    # mean-reversion engine instead of standing aside, since SMC-breakout loses
+    # there structurally. Default off until a walk-forward A/B proves it.
+    if os.getenv("BT_MR_ROUTER", "0") == "1":
+        knobs["mr_router"] = True
+        knobs["mr_adx"] = float(os.getenv("BT_MR_ADX", "20"))
+        knobs["mr_rsi_buy"] = float(os.getenv("BT_MR_RSI_BUY", "35"))
+        knobs["mr_rsi_sell"] = float(os.getenv("BT_MR_RSI_SELL", "65"))
+        knobs["mr_lookback"] = int(os.getenv("BT_MR_LOOKBACK", "20"))
+        knobs["mr_band_atr"] = float(os.getenv("BT_MR_BAND_ATR", "0.5"))
+        if os.getenv("BT_MR_RR"):
+            knobs["mr_rr"] = float(os.getenv("BT_MR_RR"))
     if os.getenv("BT_MIN_ADX"):
         knobs["smc_min_adx"] = float(os.getenv("BT_MIN_ADX"))
     if os.getenv("BT_MAX_ATR_EXPANSION"):
@@ -195,6 +210,11 @@ def optimize_smc_parameters(
     ob_range = [0.4, 0.5, 0.6, 0.7]
     fvg_range = [0.2, 0.25, 0.3, 0.35, 0.4]
 
+    # The 20 configs below differ ONLY in ob_size_atr/fvg_gap_atr (which feed SMC
+    # level detection) — indicators/macro/regime are identical across them, so
+    # compute that per-bar context once and reuse it for every config.
+    precomputed = _precompute_smc_bars(df, symbol, use_mtf=True)
+
     for ob in ob_range:
         for fvg in fvg_range:
             cfg = {
@@ -205,7 +225,7 @@ def optimize_smc_parameters(
                 "mtf_strategy": True,
                 **knobs,
             }
-            result = run_strategy_backtest(df, symbol, cfg=cfg)
+            result = run_strategy_backtest(df, symbol, cfg=cfg, precomputed=precomputed)
             m = result["metrics"]
             if m["total_trades"] < 3:
                 continue
@@ -226,6 +246,33 @@ def optimize_smc_parameters(
         "result": best_result
     }
 
+def _precompute_smc_bars(df: pd.DataFrame, symbol: str, use_mtf: bool = True) -> List[Dict]:
+    """Per-bar context that does NOT depend on cfg — indicators, macro bias and the
+    H1 regime. These are the expensive parts of the loop (the regime call rebuilds
+    EMA200/RSI/MACD/ATR over a 200-bar window every bar), yet they are identical for
+    every config in a parameter sweep. Precompute them ONCE so the sweep reuses them
+    instead of recomputing ~20x per window. cfg-dependent work (SMC level detection,
+    scoring, trade simulation) still runs per config in run_strategy_backtest."""
+    from backend.engines.market_regime import calculate_regime_from_h1
+    cols = ["open", "high", "low", "close", "volume"]
+    bars: List[Dict] = []
+    warmup = 50
+    for i in range(warmup, len(df)):
+        ohlc_window = df.iloc[max(0, i - 48):i + 1][cols].copy()
+        indicators = get_market_indicators(ohlc_window, symbol)
+        macro = _macro_trend_at_bar(df, i) if use_mtf else None
+        regime_at_bar = None
+        regime_window = df.iloc[max(0, i - 200):i + 1][cols]
+        if len(regime_window) >= 50:
+            regime_at_bar, _, _, _, _ = calculate_regime_from_h1(regime_window)
+        bars.append({
+            "i": i, "row": df.iloc[i], "ohlc_window": ohlc_window,
+            "indicators": indicators, "macro": macro, "regime": regime_at_bar,
+            "atr": indicators["atr"],
+        })
+    return bars
+
+
 def run_strategy_backtest(
     df: pd.DataFrame,
     symbol: str,
@@ -233,12 +280,15 @@ def run_strategy_backtest(
     cfg: Optional[Dict] = None,
     use_mtf: bool = True,
     equity: float = EQUITY,
+    precomputed: Optional[List[Dict]] = None,
 ) -> Dict[str, Any]:
-    """รัน backtest ต่อกลยุทธ์ — ใช้ OHLC ATR + dynamic lot sizing"""
+    """รัน backtest ต่อกลยุทธ์ — ใช้ OHLC ATR + dynamic lot sizing.
+
+    `precomputed` — reuse cfg-independent per-bar context from _precompute_smc_bars
+    (lets a parameter sweep skip recomputing indicators/regime per config)."""
     cfg = cfg or get_strategy_config(symbol)
     trades: List[Dict] = []
     active_trade = None
-    warmup = 50
 
     # Backtest circuit breaker — mirrors the live circuit_breaker_v2 so the
     # walk-forward sees realistic robustness: after `cb_max_losses` consecutive
@@ -249,8 +299,11 @@ def run_strategy_backtest(
     consec_losses = 0
     cooldown_until = -1
 
-    for i in range(warmup, len(df)):
-        row = df.iloc[i]
+    bars = precomputed if precomputed is not None else _precompute_smc_bars(df, symbol, use_mtf)
+
+    for bar in bars:
+        i = bar["i"]
+        row = bar["row"]
 
         if active_trade:
             high, low = float(row["high"]), float(row["low"])
@@ -293,32 +346,42 @@ def run_strategy_backtest(
         if cb_max_losses and i < cooldown_until:
             continue
 
-        ohlc_window = df.iloc[max(0, i - 48):i + 1][["open", "high", "low", "close", "volume"]].copy()
-        indicators = get_market_indicators(ohlc_window, symbol)
-        macro = _macro_trend_at_bar(df, i) if use_mtf else None
-
-        # Real regime (same call the live engine uses) so the backtest exercises
-        # the regime-aware reversal gate — what we test == what trades live.
-        regime_at_bar = None
-        regime_window = df.iloc[max(0, i - 200):i + 1][["open", "high", "low", "close", "volume"]]
-        if len(regime_window) >= 50:
-            from backend.engines.market_regime import calculate_regime_from_h1
-            regime_at_bar, _, _, _, _ = calculate_regime_from_h1(regime_window)
+        # cfg-independent context (precomputed once, reused across the sweep). The
+        # regime here is the same call the live engine uses, so what we test ==
+        # what trades live.
+        ohlc_window = bar["ohlc_window"]
+        indicators = bar["indicators"]
+        macro = bar["macro"]
+        regime_at_bar = bar["regime"]
 
         if cfg and cfg.get("smc_v2", False):
-            from backend.core.smc import evaluate_smc_signal
+            from backend.core.smc import evaluate_smc_signal, calculate_adx
             atr = indicators["atr"]
             ob_size = cfg.get("ob_size_atr", 0.5)
             fvg_gap = cfg.get("fvg_gap_atr", 0.3)
-            sig = evaluate_smc_signal(
-                ohlc_window, atr, indicators, macro, regime_at_bar,
-                ob_size_atr=ob_size, fvg_gap_atr=fvg_gap,
-                min_tier=cfg.get("smc_min_tier", "C"),
-                require_bias=cfg.get("smc_require_bias", False),
-                block_volatile_regime=cfg.get("smc_block_volatile", False),
-                max_atr_expansion=cfg.get("smc_max_atr_expansion"),
-                min_adx=cfg.get("smc_min_adx"),
-            )
+            # ข้อ 4 router: in low-ADX (range/chop) tape, fade the range with the
+            # mean-reversion engine — the regime where SMC-breakout gets whipsawed.
+            # Otherwise (trending) use the breakout engine as before.
+            use_mr = cfg.get("mr_router") and calculate_adx(ohlc_window) < cfg.get("mr_adx", 20.0)
+            if use_mr:
+                from backend.core.mean_reversion import evaluate_mean_reversion
+                sig = evaluate_mean_reversion(
+                    ohlc_window, atr, indicators, regime_at_bar,
+                    lookback=cfg.get("mr_lookback", 20),
+                    rsi_buy=cfg.get("mr_rsi_buy", 35.0),
+                    rsi_sell=cfg.get("mr_rsi_sell", 65.0),
+                    band_atr=cfg.get("mr_band_atr", 0.5),
+                )
+            else:
+                sig = evaluate_smc_signal(
+                    ohlc_window, atr, indicators, macro, regime_at_bar,
+                    ob_size_atr=ob_size, fvg_gap_atr=fvg_gap,
+                    min_tier=cfg.get("smc_min_tier", "C"),
+                    require_bias=cfg.get("smc_require_bias", False),
+                    block_volatile_regime=cfg.get("smc_block_volatile", False),
+                    max_atr_expansion=cfg.get("smc_max_atr_expansion"),
+                    min_adx=cfg.get("smc_min_adx"),
+                )
             signal = {
                 "action": sig["action"],
                 "strategy_type": sig["strategy_type"],
@@ -389,7 +452,12 @@ def run_strategy_backtest(
 
         risk = abs(entry - sl)
         # H1 — adaptive take-profit: RR per regime (default = fixed RR_RATIO).
-        rr = (cfg.get("rr_by_regime") or {}).get(regime_at_bar, RR_RATIO) if cfg else RR_RATIO
+        # Mean-reversion fades use their own (typically tighter) RR — the target
+        # is the range mid, not a trend extension.
+        if cfg and signal.get("strategy_type") == "MR_V1" and cfg.get("mr_rr"):
+            rr = cfg["mr_rr"]
+        else:
+            rr = (cfg.get("rr_by_regime") or {}).get(regime_at_bar, RR_RATIO) if cfg else RR_RATIO
         tp = entry + risk * rr if action == "BUY" else entry - risk * rr
         active_trade = {
             "action": action,

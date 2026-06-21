@@ -308,3 +308,97 @@ config ที่ validate แล้วว่าดีสุด = **1h + CB(3) + 
 - `backend/scratch/investigate_window65.py` — dump เทรดต่อ window พร้อม context (ไล่ root cause)
 - `_experiment_knobs()` ([backtest.py](backend/backtest.py)) — เปิด/ปิด filter ผ่าน env (CB/ADX/vol/RR/session/window-size)
   โดยไม่ต้องแก้โค้ด
+
+---
+
+# อัปเดตรอบ 2026-06-21 — Roadmap ข้อ 4: mean-reversion + per-regime router (research + วัดผลจริง)
+
+ต่อยอด roadmap ข้อ 4 (เลเวอร์ที่เหลือดัน 50→60): เพิ่มกลยุทธ์ที่ 2 (mean-reversion)
+ให้ "ตลาดที่ breakout แพ้ (range/chop)" กลายเป็นตลาดที่ MR ชนะ ผ่าน router ต่อ regime
+หลักการเดิม **"ไม่ปล่อยมั่ว"**: ทุก knob default ปิด, A/B walk-forward ก่อนเชื่อ
+
+## 22. เครื่องมือที่เพิ่ม (ทุก knob default ปิด)
+- `evaluate_mean_reversion` ([mean_reversion.py](backend/core/mean_reversion.py)) — fade ขอบ
+  Donchian range (ซื้อพื้น/ขายยอด = ตรงข้าม breakout), gate ด้วย RSI สุดขั้ว + range width +
+  regime hard-gate (ห้าม fade สวนเทรนด์ใหญ่) คืน dict รูปแบบเดียวกับ `evaluate_smc_signal`
+- Router ใน [backtest.py](backend/backtest.py): `BT_MR_ROUTER` → bar ที่ ADX < `BT_MR_ADX`
+  ส่งให้ MR, ADX สูง = trend ส่งให้ SMC-breakout (knob: `BT_MR_RSI_BUY/SELL/LOOKBACK/BAND_ATR/RR`)
+- เทสต์ใหม่: `test_mean_reversion.py` (8 ตัว) → **121 passed, 1 skipped**
+- เครื่องมือ research: `backend/scratch/ab_mr_router.py`
+
+## 23. ข้อค้นพบ (XAUUSD, walk-forward 1h/730d OOS=400, ตัวเลขจริง)
+1. **MR เดี่ยว ๆ มี edge จริงในตลาด chop** (isolate SMC ออก, วัด MR-only):
+
+   | MR-only config | n | WR | PF | maxDD |
+   |---|---|---|---|---|
+   | ADX<20, rr=2.0 | 5 | 20% | 0.48 | — ❌ |
+   | ADX<30, rr=2.0 | 22 | 41% | 1.38 | 9.3% |
+   | **ADX<30, rr=1.0** | 28 | **61%** | **1.54** | **5.6%** ✅ |
+   | ADX<40, rr=1.0 | 57 | 56% | 1.28 | 7.3% |
+
+   บทเรียน MR: ต้องใช้ **RR=1.0** (เป้า = กลาง range ไม่ใช่ยืด 2R) + route ที่ **ADX<30** (chop
+   หายนะไม่ได้อยู่แค่ใต้ 20) — รอบแรกตั้ง rr=2.0 + ADX<20 ผิดทั้งคู่ → MR ยิงแค่ 1 ไม้/288, แพ้
+
+2. **แต่ combined router ไม่ดัน gate** — pass-ratio ราย window:
+
+   | config | pass-ratio | thin | blowups |
+   |---|---|---|---|
+   | base CB3+ADX20 | 41.2% | 5 | 4 |
+   | router adx25 rr1.0 (ดีสุด) | **44.1%** | 4 | 4 |
+   | router adx30 rr1.0 | 38.2% | 8 | 4 |
+   | router adx35 rr1.0 | 32.4% | 5 | 5 |
+
+3. **ทำไม edge จริงแต่ gate ไม่ขยับ:** MR ยิง ~28 ไม้/730วัน = **<1 ไม้/window** → บางเกินจะพลิก
+   verdict ราย window; blowups ยังคา 4 (MR ไม่ได้ซ่อม window หายนะ); routing บาง bar ไป MR ที่ไม่
+   ยิง → ลบเทรด SMC ตรงนั้น → thin เพิ่ม (8 vs 5)
+4. **การวัดมี noise:** base เดิม 47.1% (§16) รอบนี้ 41.2% — Yahoo คืน bars ต่างกัน (13736 vs 13719)
+   → pass-ratio แกว่ง ±หลาย pp บน config เดียวกัน ⇒ **+3pp ของ router จมใน noise** สรุปว่าดีขึ้นไม่ได้
+
+## 24. สรุป / ขั้นต่อไป
+- **เพดาน backtest ยังคา ~45-50%** — ทั้ง filter (ข้อ2), adaptive-TP/session (ข้อ3), และ MR router
+  (ข้อ4) ดันไม่ถึง 60% คอขวดตัวจริง = **thin window (เทรดน้อยเกินต่อ window) + blowup ไม่กี่ window**
+  ซึ่งกลยุทธ์ใหม่บน 1h ไม่แก้ (ความถี่ไม่พอ)
+- **MR knob คง default ปิดทั้งหมด** (เหมือน knob อื่นที่ยังไม่ผ่าน) — live ไม่เปลี่ยน, auto-trade ปิดต่อ
+  เก็บ engine+router+เทสต์ไว้เป็น scaffolding (edge เดี่ยวพิสูจน์แล้ว ใช้ต่อได้ถ้าแก้ occupancy/ความถี่)
+- **บทเรียนเชิงยุทธศาสตร์:** การจูน backtest ชนเพดานซ้ำ ๆ → เลเวอร์ที่เหลือคือ **เส้นทาง A
+  (forward-test paper เก็บ ground truth จริง)** มากกว่าจะดัน backtest ต่อ; หรือถ้าจะดัน edge ต่อต้อง
+  ขยับ **timeframe ที่เทรดถี่ขึ้น** เพื่อแก้ thin-window โดยตรง (งาน research ก้อนใหม่)
+
+## 25. Root-cause ราย window (2026-06-21) — คอขวดจริง ≠ thin (พลิกความเชื่อเดิม)
+แยกแยะทุก OOS window ของ base (1h/730d OOS=400 + CB3 + ADX20) ว่าตกเพราะ thin หรือ edge จริง
+และตกเกณฑ์ข้อไหน (`backend/scratch/diagnose_failures.py`):
+
+| symbol | pass | **เพดานถ้าแก้ thin หมด** | real-fail (เทรดพอ แต่ขาดทุน) | blowups (ruin≥50%) |
+|---|---|---|---|---|
+| XAUUSD | 41.2% | **44.1%** (มี thin ที่จะผ่านแค่ 1) | 15 | 4 |
+| BTCUSDT | 48.8% | **48.8%** (ไม่มี thin ที่จะผ่านเลย) | 20 | 12 |
+| ETHUSDT | 34.9% | **37.2%** (มี thin ที่จะผ่านแค่ 1) | 24 | 3 |
+
+**ข้อสรุปชี้ขาด (แก้ความเข้าใจผิดที่ฝังมาตั้งแต่ §16):**
+- **thin/frequency ไม่ใช่คอขวด** — แก้ thin ให้หมดก็ยังไม่ถึง 50% ทุกตัว
+- คอขวดจริง = **window ที่ขาดทุนจริง (PF<1)** จำนวนมาก, ตก PF+Sharpe+Ruin พร้อมกัน (ขาดทุนสุทธิ
+  ไม่ใช่เฉียดเส้น) — SMC-breakout เข้าแล้วโดน SL net ในตลาดที่ไม่เป็นใจ
+- **filter/stand-aside ดัน pass-ratio ไม่ได้** (FAIL→ยืนเฉย = THIN = ยังไม่ผ่าน) → ทางเดียวสู่ 60%
+  คือ **ทำให้ window ขาดทุน → ชนะจริง** = เพิ่ม edge ต่อเทรด หรือเปลี่ยนทิศ/กลยุทธ์ใน window พวกนั้น
+  ให้มี "ไม้ชนะพอจะพลิก net" (MR router เดิมยิง <1 ไม้/window จึงพลิกไม่ได้)
+- กลุ่มน่าสนใจ (XAU): #13/#16/#19/#22/#31 อยู่ที่ PF 0.98-1.00 — เฉียดเส้น แค่ตัดไม้แพ้ไม่กี่ไม้ก็พลิก
+
+## 26. Engineering — เร่ง walk-forward harness 9x (2026-06-21)
+**ปัญหา:** `optimize_smc_parameters` sweep 20 configs/window แต่ละ config เรียก `run_strategy_backtest`
+ที่ recompute **indicators + macro + regime ต่อทุก bar ใหม่หมด** ทั้งที่ 20 configs ต่างกันแค่
+`ob_size_atr/fvg_gap_atr` (ป้อน SMC level detection เท่านั้น) — regime/indicators เหมือนกันทุก config
+→ คำนวณ regime (EMA200/RSI/MACD/ATR บนหน้าต่าง 200 แท่ง) ซ้ำ 20 เท่าโดยเปล่าประโยชน์
+
+**แก้:** เพิ่ม `_precompute_smc_bars()` คำนวณ context ที่ไม่ขึ้นกับ cfg (indicators/macro/regime/atr)
+**ครั้งเดียว** ต่อ window แล้ว `run_strategy_backtest(precomputed=...)` ใช้ซ้ำ; งานที่ขึ้นกับ cfg
+(SMC levels + scoring + trade sim) ยังรันต่อ config ตามเดิม
+
+| | ก่อน | หลัง |
+|---|---|---|
+| sweep 20 cfgs / 550 แท่ง | 24.4s | **2.7s (9.0x)** |
+| ผลลัพธ์ | — | **เท่าเดิมเป๊ะ** (XAU walk-forward 14/34 = 41.2% ตรงกับโค้ดเก่า) |
+
+- เทสต์ใหม่ `test_backtest_precompute.py` (2 ตัว) pin invariant: precomputed == self-computed
+  (trade/PnL/PF เท่ากันทุกไม้) → **123 passed, 1 skipped**
+- ผลพลอยได้: validate/walkforward/research (ทุกอย่างที่พึ่ง sweep) เร็วขึ้น ~5-9x → เฟสกลยุทธ์ถัดไป
+  ทดลองได้ถี่ขึ้นมาก
