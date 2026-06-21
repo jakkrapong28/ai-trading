@@ -402,3 +402,80 @@ config ที่ validate แล้วว่าดีสุด = **1h + CB(3) + 
   (trade/PnL/PF เท่ากันทุกไม้) → **123 passed, 1 skipped**
 - ผลพลอยได้: validate/walkforward/research (ทุกอย่างที่พึ่ง sweep) เร็วขึ้น ~5-9x → เฟสกลยุทธ์ถัดไป
   ทดลองได้ถี่ขึ้นมาก
+
+---
+
+# อัปเดตรอบ 2026-06-21 (ต่อ) — Pin dataset + Paper auto-execute + MR-primary research
+
+ต่อยอด 3 เรื่องในวันเดียว: (A) ทำเครื่องวัดให้นิ่งก่อน (B) เปิด paper auto-execute ตามเส้นทาง A
+(C) research edge รอบถัดไป (MR-as-primary) บนเครื่องวัดที่นิ่งแล้ว หลักการเดิม **"ไม่ปล่อยมั่ว"**
+
+## 27. Pin dataset — walk-forward reproducible (แก้ก่อน research)
+
+**ปัญหา:** config เดียวกันให้ pass-ratio ต่างกัน (47.1% §16 vs 41.2% §23) เพราะ Yahoo คืน
+จำนวนแท่งไม่เท่ากันทุกครั้ง (13736 vs 13719) — `range=730d` เลื่อนตามเวลาจริง + ไม่มี cache
+→ "+3pp ของ router จมใน noise" (§23.4) ตีความ delta เล็กไม่ได้
+
+| | ก่อน | หลัง |
+|---|---|---|
+| `fetch_backtest_data` | ยิง Yahoo สดทุกครั้ง ไม่ cache | **disk-cache** ที่ chokepoint เดียว (ทุก caller รวม scratch ได้ cache อัตโนมัติ) |
+| ผลซ้ำ | แกว่ง ±หลาย pp บน config เดิม | **เท่ากันเป๊ะ** — walk-forward 2 รอบ = `20.000000%` ทั้งคู่ |
+| ข้าม 2 เครื่อง | ไม่การันตี | freeze เป็นไฟล์ commit ได้ → PC/Mac ใช้แท่งเดียวกัน (ตรงกฎเหล็ก §1.6) |
+
+- key = `{symbol}_{interval}_{range}` (sanitize `GC=F`→`GC_F`), parquet→fallback pickle (venv py3.14
+  ไม่มี parquet engine), env `BT_DATA_CACHE` + `BT_CACHE_REFRESH=1` (re-pin)
+- pin แล้ว 3 symbol → `backend/data/cache/` (XAU 13719 / BTC 17477 / ETH 17474 แท่ง)
+- ไฟล์: [`fetch_backtest_data` backtest.py](backend/backtest.py), `backend/scratch/pin_dataset.py`,
+  เทสต์ `test_backtest_cache.py` (4 ตัว) → **128 passed**
+
+## 28. Paper auto-execute (เส้นทาง A) — "ทำไมไม่มีออเดอร์เข้า"
+
+**คำถามผู้ใช้:** "ตั้งกฎสูงไปหรือเปล่า ไม่มีออเดอร์เข้าเลย" — ตรวจ backend จริง: **ไม่ใช่กฎเข้มเกิน**
+ระบบอยู่ **Watch Mode** ([risk.py:221](backend/engines/risk.py#L221)) ปัดทุกสัญญาณ **ก่อน** ประเมินกฎ
+TIER/confidence/spread ด้วยซ้ำ (ฟีเจอร์ปลอดภัยตามหลัก auto-trade ปิด)
+
+| | ก่อน | หลัง |
+|---|---|---|
+| โหมดตอนบูต | hardcode `"watch"` + ทับ env | honor `CURRENT_MODE` env → **persist ข้าม restart** (default ยัง watch) |
+| สมองสัญญาณ live | `smc_strategy=False` → unified ตัวเก่า | **`True`** → TIER A/B/C (สมองเดียวกับ backtest) |
+| knob ใน live call | ไม่ส่งเลย (default ล้วน) | ส่ง `min_tier=C` + `min_adx=20` → **live == validated backtest config** |
+| โหมดปัจจุบัน | watch | **auto** (flip ผ่าน API ทันที) — ยืนยัน `/api/state` = auto, smc_strategy True |
+
+- ไฟล์: [main.py:138](backend/main.py#L138), [config.py:56](backend/config.py#L56) + `SMC_LIVE_MIN_TIER/ADX`,
+  [strategy.py:219](backend/engines/strategy.py#L219), `backend/.env` (+`.env.example`)
+- **paper-only/reversible:** MT5 `order_send` ยังไม่ wire → ลง PaperBroker (DB) เท่านั้น ไม่มีเงินจริง;
+  กลับ watch ได้ทุกเมื่อ
+- **ที่ออเดอร์โผล่:** หน้า journal/ประวัติ + orders ของ dashboard — **ไม่ใช่** แผง MT5 positions (demo ว่าง §12)
+- ground-truth loop พร้อม: `run_calibration` resolve `SMCSignalLog` PENDING→WIN/LOSS → `StrategyStats`
+- หมายเหตุ: 1h + min_adx=20 + AI committee → ออเดอร์ไม่ถี่ อาจรอเป็นชั่วโมงกว่าจะเห็นไม้แรก (ปกติ)
+
+## 29. Roadmap ข้อ 4 (รอบถัดไป) — MR-as-primary ราย window (ตัวเลขจริง)
+
+**Hypothesis (§25):** คอขวด = window ที่ขาดทุนสุทธิ (PF<1) ไม่ใช่ thin; MR เดี่ยวมี edge (§23) แต่
+router เดิม per-**bar** ยิง <1 ไม้/window พลิกไม่ได้ → รอบนี้จัด regime ราย **window** จาก in-sample ADX
+(ไม่ lookahead) ให้ window range-dominant ใช้ **MR เป็น engine หลักทั้ง window** เพื่อยิงพอจะพลิก
+- knob `BT_MR_PRIMARY` + `BT_MR_PRIMARY_ADX` (default ปิด), per-window decision ใน walk-forward,
+  sim branch reuse `evaluate_mean_reversion`; research `ab_mr_primary.py`; เทสต์ `test_mr_primary.py`
+  (4 ตัว, spy พิสูจน์ routing) → **132 passed**
+- วัดบน **pinned data** → delta = edge จริง ไม่ใช่ noise; ตัวชี้ขาด = window ที่ base PF<1 ถูกพลิกเป็น
+  PF≥1.3 กี่อัน (`losing->flipped`)
+
+| symbol | config | pass-ratio | Δ | thin | flipped | regressed |
+|---|---|---|---|---|---|---|
+| XAUUSD | base CB3+ADX20 | 41.2% (14/34) | — | 5 | — | — |
+| | MR-primary adx<20 | 29.4% | −11.8pp | 10 | **0/11** | 5 |
+| | MR-primary adx<25 | 26.5% | −14.7pp | 12 | **0/11** | 6 |
+| | MR-primary adx<30 | 11.8% | −29.4pp | 19 | **0/11** | 11 |
+| BTCUSDT | base CB3+ADX20 | 48.8% (21/43) | — | 2 | — | — |
+| | MR-primary adx<20 | 34.9% | −13.9pp | 8 | **0/18** | 7 |
+| | (BTC adx<25/30 + ETHUSDT ยังรันอยู่ — เติมเมื่อเสร็จ) | | | | | |
+
+**ข้อสรุป (ชัดเจนจากทุกค่าที่วัด):** MR-as-primary **ไม่เวิร์ก** — แย่ลงทุก config, **flipped 0 ทุกครั้ง**
+(พลิก window ขาดทุนเป็นชนะไม่ได้เลย) + regressed window ดี + thin เพิ่มทุกค่า สาเหตุ: regime hard-gate
+ของ MR (ห้าม fade สวนเทรนด์) + range-width gate บล็อกที่ขอบ range พอดี → MR ยิงไม่พอแม้เป็น primary
+**occupancy ที่ §23 เจอยังไม่หาย** → knob **คง default ปิด** เก็บเป็น scaffolding ไม่ดันแบบ overfit
+
+**บทเรียน:** การเปลี่ยน "ตัวเลือก engine" ราย window ไม่ใช่เลเวอร์ — MR แพ้เพราะ gate ของมันเองบล็อก
+ตรงจุดที่ควรยิง เลเวอร์จริงสู่ 60% ต้อง (ก) ผ่อน gate ของ MR ให้ยิงในตลาด chop ได้จริง หรือ (ข) เพิ่ม
+edge ต่อเทรดของ breakout ใน window ที่แพ้ หรือ (ค) เน้นเส้นทาง A (forward-test paper เก็บ ground truth)
+ที่เพิ่งเปิด (§28) มากกว่าดัน backtest ที่ชนเพดานซ้ำ ๆ — **live ไม่เปลี่ยน (knob ปิด)**
