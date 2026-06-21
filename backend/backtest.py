@@ -9,6 +9,7 @@ Usage:
 """
 import sys
 import os
+import re
 import asyncio
 import copy
 import httpx
@@ -98,6 +99,21 @@ def _experiment_knobs() -> Dict[str, Any]:
         knobs["mr_band_atr"] = float(os.getenv("BT_MR_BAND_ATR", "0.5"))
         if os.getenv("BT_MR_RR"):
             knobs["mr_rr"] = float(os.getenv("BT_MR_RR"))
+    # ข้อ 4 (รอบถัดไป) — MR-as-primary ราย WINDOW: per-bar routing fired MR <1
+    # trade/window (§23), too sparse to flip a window's verdict. Instead classify
+    # each window from its in-sample ADX (lookahead-free) and, when range-dominant,
+    # run MR as the sole engine for the whole window so it trades enough to turn the
+    # losing breakout windows (PF<1) into wins (§25). `mr_primary_enabled` only arms
+    # it; run_walk_forward_backtest decides per-window. Default off.
+    if os.getenv("BT_MR_PRIMARY", "0") == "1":
+        knobs["mr_primary_enabled"] = True
+        knobs["mr_primary_adx"] = float(os.getenv("BT_MR_PRIMARY_ADX", "25"))
+        knobs["mr_rsi_buy"] = float(os.getenv("BT_MR_RSI_BUY", "35"))
+        knobs["mr_rsi_sell"] = float(os.getenv("BT_MR_RSI_SELL", "65"))
+        knobs["mr_lookback"] = int(os.getenv("BT_MR_LOOKBACK", "20"))
+        knobs["mr_band_atr"] = float(os.getenv("BT_MR_BAND_ATR", "0.5"))
+        if os.getenv("BT_MR_RR"):
+            knobs["mr_rr"] = float(os.getenv("BT_MR_RR"))
     if os.getenv("BT_MIN_ADX"):
         knobs["smc_min_adx"] = float(os.getenv("BT_MIN_ADX"))
     if os.getenv("BT_MAX_ATR_EXPANSION"):
@@ -120,7 +136,41 @@ def apply_trade_costs(trade: dict, symbol: str) -> dict:
     trade["costs"] = {"spread": spread_cost, "commission": commission}
     return trade
 
-async def fetch_backtest_data(symbol: str, interval: str = "1h", range_val: str = "60d") -> pd.DataFrame:
+# --- Pinned dataset cache --------------------------------------------------
+# Yahoo's `range=730d` window slides with wall-clock time, so the same config
+# returned a different bar count every run (13736 vs 13719) → walk-forward
+# pass-ratios swung ±several pp on identical configs and small deltas drowned
+# in noise. We freeze the FIRST fetch per (symbol, interval, range) to disk and
+# replay it thereafter, so backtests are reproducible across runs and machines
+# (same spirit as the seeded risk-of-ruin). Set BT_CACHE_REFRESH=1 to re-pin.
+
+def _cache_dir() -> str:
+    return os.getenv("BT_DATA_CACHE") or os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "data", "cache"
+    )
+
+def _cache_base_path(symbol: str, interval: str, range_val: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", f"{symbol}_{interval}_{range_val}")
+    return os.path.join(_cache_dir(), safe)
+
+def _cache_exists(base: str) -> bool:
+    return os.path.exists(base + ".parquet") or os.path.exists(base + ".pkl")
+
+def _load_cache(base: str) -> pd.DataFrame:
+    if os.path.exists(base + ".parquet"):
+        return pd.read_parquet(base + ".parquet")
+    return pd.read_pickle(base + ".pkl")
+
+def _save_cache(base: str, df: pd.DataFrame) -> None:
+    os.makedirs(os.path.dirname(base), exist_ok=True)
+    # Prefer parquet (inspectable, dtype-faithful); fall back to pickle when no
+    # parquet engine (pyarrow/fastparquet) is installed — pickle is exact too.
+    try:
+        df.to_parquet(base + ".parquet", index=False)
+    except Exception:
+        df.to_pickle(base + ".pkl")
+
+async def _fetch_yahoo(symbol: str, interval: str, range_val: str) -> pd.DataFrame:
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval={interval}&range={range_val}"
     headers = {"User-Agent": "Mozilla/5.0"}
     async with httpx.AsyncClient() as client:
@@ -141,6 +191,14 @@ async def fetch_backtest_data(symbol: str, interval: str = "1h", range_val: str 
             "volume": quote.get("volume", []),
         })
         return df.dropna().reset_index(drop=True)
+
+async def fetch_backtest_data(symbol: str, interval: str = "1h", range_val: str = "60d") -> pd.DataFrame:
+    base = _cache_base_path(symbol, interval, range_val)
+    if _cache_exists(base) and os.getenv("BT_CACHE_REFRESH") != "1":
+        return _load_cache(base)
+    df = await _fetch_yahoo(symbol, interval, range_val)
+    _save_cache(base, df)
+    return df
 
 def _macro_trend_at_bar(df: pd.DataFrame, i: int, lookback: int = 48) -> Optional[str]:
     start = max(0, i - lookback)
@@ -362,7 +420,11 @@ def run_strategy_backtest(
             # ข้อ 4 router: in low-ADX (range/chop) tape, fade the range with the
             # mean-reversion engine — the regime where SMC-breakout gets whipsawed.
             # Otherwise (trending) use the breakout engine as before.
-            use_mr = cfg.get("mr_router") and calculate_adx(ohlc_window) < cfg.get("mr_adx", 20.0)
+            # mr_primary = this whole window was classified range-dominant → always
+            # MR. Otherwise the per-bar router fades only the low-ADX bars.
+            use_mr = cfg.get("mr_primary") or (
+                cfg.get("mr_router") and calculate_adx(ohlc_window) < cfg.get("mr_adx", 20.0)
+            )
             if use_mr:
                 from backend.core.mean_reversion import evaluate_mean_reversion
                 sig = evaluate_mean_reversion(
@@ -515,7 +577,16 @@ def run_walk_forward_backtest(
             opt_res = optimize_rsi_thresholds(in_sample_df, symbol)
             
         best_cfg = opt_res["best_config"]
-        
+
+        # MR-as-primary: classify THIS window from its in-sample ADX (in-sample
+        # precedes OOS → no lookahead). Range-dominant windows run MR as the sole
+        # engine on the OOS bars; trending windows keep the breakout engine.
+        if best_cfg.get("mr_primary_enabled"):
+            from backend.core.smc import calculate_adx
+            in_sample_adx = calculate_adx(in_sample_df)
+            if in_sample_adx < best_cfg.get("mr_primary_adx", 25.0):
+                best_cfg = {**best_cfg, "mr_primary": True}
+
         # Validate on Out-of-Sample
         oos_res = run_strategy_backtest(oos_df, symbol, cfg=best_cfg)
         
